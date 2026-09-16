@@ -1,18 +1,28 @@
 // Include libraries here
+#include <stdio.h>
 #include "driver/gpio.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "driver/i2c_master.h"
+#include "driver/spi_master.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 
 // Custom headers
 #include "max30102.h"
+#include "sh1107.h"
 
 // Macros for GPIO
 #define USER_LED GPIO_NUM_21
 #define I2C_SCL GPIO_NUM_6
 #define I2C_SDA GPIO_NUM_5
+#define SPI_SCLK GPIO_NUM_7
+#define SPI_MOSI GPIO_NUM_9
+// #define SPI_MISO GPIO_NUM_8
+#define SPI_DC GPIO_NUM_43
+#define SPI_CS GPIO_NUM_44
+#define SPI_RST GPIO_NUM_4
+
 
 // Configs
 
@@ -31,7 +41,7 @@ static const char *HEART_RATE_TAG = "heartrate";
 // Main application loop
 void app_main(void)
 {
-    // Config
+    // Configurations
 
     // Heartbeat LED config
 	gpio_config_t led_config = {
@@ -42,6 +52,26 @@ void app_main(void)
 		.intr_type = GPIO_INTR_DISABLE,
 	};
 	gpio_config(&led_config);
+
+    // SPI & sh1107 (OLED Display)
+    sh1107_config_t display_config = {
+        .host = SPI2_HOST,
+        .sclk_gpio = SPI_SCLK,
+        .mosi_gpio = SPI_MOSI,
+        .cs_gpio = SPI_CS,
+        .dc_gpio = SPI_DC,
+        .reset_gpio = SPI_RST,
+    };
+    ESP_ERROR_CHECK(sh1107_init(&display_config));
+    ESP_ERROR_CHECK(sh1107_clear());
+    ESP_ERROR_CHECK(sh1107_print("HeartWatch\nReady!\n"));
+
+    ESP_ERROR_CHECK(sh1107_print("Test additional print\n"));
+    ESP_ERROR_CHECK(sh1107_print("Initializing...\n"));
+
+    vTaskDelay(500);
+
+    ESP_ERROR_CHECK(sh1107_clear());
 
     // I2C master configuration
     i2c_master_bus_config_t i2c_mst_config = {
@@ -103,7 +133,6 @@ void app_main(void)
     uint32_t signal_peak = 0;
     int64_t last_beat_ms = 0;
 
-
     // Main polling loop
 	while (1) {
 
@@ -146,6 +175,12 @@ void app_main(void)
                     // If the BPM is reasonable, print it to log
                     if (bpm >= 40 && bpm <= 220) {
                         ESP_LOGE(HEART_RATE_TAG, "Heart rate: %lu BPM", (unsigned long)bpm);
+
+                        // print to OLED
+                        ESP_ERROR_CHECK(sh1107_clear());
+                        char message[20];
+                        snprintf(message, sizeof(message),"Heart rate: %lu BPM", (unsigned long)bpm);
+                        ESP_ERROR_CHECK(sh1107_print(message));
                     }
                 }
                 // update last time for beat
