@@ -234,3 +234,17 @@ esp_err_t sh1107_print(const char *text)
     // Return ok
     return ESP_OK;
 }
+
+// Sleep mode
+esp_err_t sh1107_sleep(void)
+{
+    ESP_RETURN_ON_ERROR(sh1107_command(0xAE), TAG, "Sleep failed");
+    return ESP_OK;
+}
+
+// Exit sleep
+esp_err_t sh1107_wake(void)
+{
+    ESP_RETURN_ON_ERROR(sh1107_command(0xAF), TAG, "Wake failed");
+    return ESP_OK;
+}

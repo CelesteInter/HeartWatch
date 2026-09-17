@@ -44,4 +44,14 @@ esp_err_t sh1107_write_char(char character);
  */
 esp_err_t sh1107_print(const char *text);
 
+/**
+ * @brief Force display into sleep mode
+ */
+esp_err_t sh1107_sleep(void);
+
+/**
+ * @brief Wakeup
+ */
+esp_err_t sh1107_wake(void);
+
 #endif

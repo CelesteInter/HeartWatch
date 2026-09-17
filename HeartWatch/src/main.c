@@ -99,7 +99,7 @@ void app_main(void)
     ESP_ERROR_CHECK(i2c_master_bus_add_device(bus_handle, &i2c_mpu_config, &mpu_handle));
 
     // Delay for terminal to catchup for debug
-    vTaskDelay(500);
+    // vTaskDelay(500);
 
     // MPU read buffer
     uint8_t mpu_data[MPU_DATA_LENGTH];
