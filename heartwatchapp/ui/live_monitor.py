@@ -6,6 +6,13 @@ now is the write path: every generated sample is inserted through
 DatabaseWriter.insert_imu_batch / insert_hr_batch against a session opened with
 start_session(device_id="demo", ...), exactly like BLE data will be. That makes
 step 6 a source swap and nothing else.
+
+The activity badge is dummy too: every 5 seconds it picks a (usually
+unchanged) activity with a random confidence and writes it as a prediction
+row, model_version "demo-dummy", through DatabaseWriter.insert_prediction --
+the same path the real TFLite classifier will use in step 6. Without these,
+demo sessions would have no predictions and could never get an AI summary
+(see data/stats.py's is_summarizable()).
 """
 
 from __future__ import annotations
@@ -23,6 +30,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..data import seed
 from ..data.writer import DatabaseWriter
 from .charts import LiveHRChart
 from .theme import Theme
@@ -33,6 +41,10 @@ from .widgets import Badge, Card, heading, muted
 # accel/gyro range settings. Multiplied in only when writing to the DB so the
 # on-screen numbers (which read naturally as g / deg-per-second) don't change.
 _RAW_COUNT_SCALE = 1000
+
+# The dummy activity classifier (until step 6's real TFLite model) lives in
+# data/seed.py so "Seed demo session" can reuse it -- see
+# seed.next_dummy_prediction() and the constants next to it.
 
 IMU_AXES = [
     ("ax", "accent", (-2.0, 2.0)),
@@ -167,6 +179,11 @@ class LiveMonitorView(QWidget):
         self._imu_timer.timeout.connect(self._tick_imu)
         self._imu_timer.start(100)
 
+        self._activity = "Walking"
+        self._prediction_timer = QTimer(self)
+        self._prediction_timer.timeout.connect(self._tick_prediction)
+        self._prediction_timer.start(seed.PREDICTION_WINDOW_MS)
+
         self._tick_hr()
 
     # -- left ------------------------------------------------------------
@@ -205,7 +222,8 @@ class LiveMonitorView(QWidget):
         badge_row.addWidget(self.activity_badge, 0, Qt.AlignLeft)
         badge_row.addStretch(1)
         act.body().addLayout(badge_row)
-        act.body().addWidget(muted("Confidence: 94%"))
+        self.confidence_label = muted("Confidence: --")
+        act.body().addWidget(self.confidence_label)
         act.body().addWidget(muted("Model: 1D CNN · TFLite"))
         lay.addWidget(act)
 
@@ -245,12 +263,27 @@ class LiveMonitorView(QWidget):
             raw = tuple(int(round(v * _RAW_COUNT_SCALE)) for v in self._imu_state)
             self._writer.insert_imu_batch(self._session_id, [(ts, *raw)])
 
+    def _tick_prediction(self) -> None:
+        # Called at the END of each 5-second window, matching the
+        # predictions table's convention that `ts` is the window end time.
+        self._activity, confidence = seed.next_dummy_prediction(self._activity)
+        self.activity_badge.setText(self._activity)
+        self.activity_badge.set_color(self.theme.activity_color(self._activity))
+        self.confidence_label.setText(f"Confidence: {confidence:.0%}")
+
+        if self._writer is not None and self._session_id is not None:
+            ts = int(time.time() * 1000)
+            self._writer.insert_prediction(
+                self._session_id, ts, self._activity, confidence, seed.DUMMY_MODEL_VERSION
+            )
+
     def shutdown(self) -> None:
         """Stops the generator timers and closes out the demo session.
         Must be called before this view is torn down (theme rebuild, app
         close) so `ended_at` gets stamped instead of staying NULL forever."""
         self._hr_timer.stop()
         self._imu_timer.stop()
+        self._prediction_timer.stop()
         if self._writer is not None and self._session_id is not None:
             self._writer.end_session(self._session_id)
             self._session_id = None

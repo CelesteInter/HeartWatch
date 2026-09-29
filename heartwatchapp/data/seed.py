@@ -20,8 +20,50 @@ _GYRO_RANGE = (-250.0, 250.0)
 _RAW_COUNT_SCALE = 1000  # spreads the -2..2 / -250..250 walk into non-degenerate ints
 
 
+# Dummy activity classifier (until step 6's real TFLite model). One
+# prediction per 5-second window, like the real classifier will emit.
+# Each window has a small chance of switching activity so sessions get a
+# realistic mix; confidence is random, so now and then a window falls
+# below data/stats.py's LOW_CONFIDENCE_THRESHOLD (0.6). Used by both the
+# Live Monitor's live demo session and DatabaseWriter.seed_demo_session;
+# rows are tagged DUMMY_MODEL_VERSION so they're easy to find and delete.
+# Remove along with the other dummy generators in milestone 6.
+PREDICTION_WINDOW_MS = 5000
+ACTIVITY_SWITCH_CHANCE = 0.15
+DUMMY_CONFIDENCE_RANGE = (0.55, 0.98)
+DUMMY_MODEL_VERSION = "demo-dummy"
+
+
 def random_label() -> str:
     return random.choice(ACTIVITY_LABELS)
+
+
+def next_dummy_prediction(current_label: str) -> tuple[str, float]:
+    """One dummy classifier window: (label, confidence). Usually keeps
+    `current_label`; with ACTIVITY_SWITCH_CHANCE switches to a different
+    activity."""
+    label = current_label
+    if random.random() < ACTIVITY_SWITCH_CHANCE:
+        label = random.choice([a for a in ACTIVITY_LABELS if a != current_label])
+    return label, round(random.uniform(*DUMMY_CONFIDENCE_RANGE), 2)
+
+
+def generate_prediction_rows(
+    started_at_ms: int, duration_s: float, first_label: str | None = None
+) -> list[tuple[int, str, float]]:
+    """[(ts, predicted, confidence), ...] -- one dummy prediction per
+    PREDICTION_WINDOW_MS window over the session, `ts` being each window's
+    END time (the predictions table's convention). Same generator the Live
+    Monitor uses, just run over a whole session at once."""
+    label = first_label or random_label()
+    rows = []
+    ts = started_at_ms + PREDICTION_WINDOW_MS
+    end_ms = started_at_ms + int(duration_s * 1000)
+    while ts <= end_ms:
+        label, confidence = next_dummy_prediction(label)
+        rows.append((ts, label, confidence))
+        ts += PREDICTION_WINDOW_MS
+    return rows
 
 
 def generate_imu_rows(

@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..data.writer import DatabaseWriter
+from ..llm.worker import LlmWorker
 from .ai_bar import AiBar
 from .dashboard import DashboardView
 from .live_monitor import LiveMonitorView
@@ -34,10 +35,16 @@ SECTION_META = [
 
 
 class HeartWatchApp(QMainWindow):
-    def __init__(self, theme: Theme, writer: DatabaseWriter | None = None):
+    def __init__(
+        self,
+        theme: Theme,
+        writer: DatabaseWriter | None = None,
+        llm_worker: LlmWorker | None = None,
+    ):
         super().__init__()
         self.theme = theme
         self.writer = writer
+        self.llm_worker = llm_worker
         self.setWindowTitle("HeartWatch")
         self.resize(1180, 780)
         self.setMinimumSize(940, 640)
@@ -60,6 +67,10 @@ class HeartWatchApp(QMainWindow):
         rv.setSpacing(0)
 
         self.topbar = Topbar(theme)
+        if self.llm_worker is not None:
+            self.llm_worker.health_checked.connect(
+                lambda status: self.topbar.set_ai_status(status.ready, status.message)
+            )
         rv.addWidget(self.topbar)
 
         self.stack = QStackedWidget()
@@ -91,7 +102,7 @@ class HeartWatchApp(QMainWindow):
 
         self.dashboard = DashboardView(self.theme)
         self.live = LiveMonitorView(self.theme, self.writer)
-        self.sessions = SessionsView(self.theme)
+        self.sessions = SessionsView(self.theme, self.llm_worker)
         self.ml = MlView(self.theme)
         self.settings = SettingsView(self.theme, self.writer)
         self.settings.theme_toggled.connect(self._toggle_theme)

@@ -131,8 +131,8 @@ class DatabaseWriter:
     def seed_demo_session(
         self, label: str | None = None, duration_s: float | None = None
     ) -> int:
-        """Generates 2-3 minutes of synthetic IMU/HR data and writes it through
-        the same insert_imu_batch / insert_hr_batch statements the live batch
+        """Generates 2-3 minutes of synthetic IMU/HR data plus dummy activity
+        predictions, and writes it through the same insert statements the live batch
         flush uses -- not a separate shortcut, just run synchronously as one
         control job so the session can be backdated to look like a real past
         recording. Returns the new session id."""
@@ -142,7 +142,13 @@ class DatabaseWriter:
         started_at = ended_at - int(duration_s * 1000)
         imu_rows = seed_gen.generate_imu_rows(started_at, duration_s)
         hr_rows = seed_gen.generate_hr_rows(started_at, duration_s)
-        payload = (label, started_at, ended_at, imu_rows, hr_rows)
+        # Dummy activity predictions (until step 6's real TFLite model), so a
+        # seeded session can reach the AI summary path -- without any, it
+        # always fails data/stats.py's is_summarizable(). Same generator as
+        # the Live Monitor; tagged model_version "demo-dummy". Remove along
+        # with the other dummy generators in milestone 6.
+        pred_rows = seed_gen.generate_prediction_rows(started_at, duration_s, label)
+        payload = (label, started_at, ended_at, imu_rows, hr_rows, pred_rows)
         return self._submit_sync(_Kind.SEED_DEMO, payload)
 
     def flush_and_wait(self) -> None:
@@ -242,13 +248,20 @@ class DatabaseWriter:
                     db_ops.delete_session(conn, job.payload)
                 result = None
             elif job.kind is _Kind.SEED_DEMO:
-                label, started_at, ended_at, imu_rows, hr_rows = job.payload
+                label, started_at, ended_at, imu_rows, hr_rows, pred_rows = job.payload
                 with conn:
                     result = db_ops.start_session(
                         conn, "seed", label, 1.0, 1.0, started_at
                     )
                     db_ops.insert_imu_batch(conn, result, imu_rows)
                     db_ops.insert_hr_batch(conn, result, hr_rows)
+                    db_ops._insert_prediction_rows(
+                        conn,
+                        [
+                            (result, ts, predicted, confidence, seed_gen.DUMMY_MODEL_VERSION)
+                            for ts, predicted, confidence in pred_rows
+                        ],
+                    )
                     db_ops.end_session(conn, result, ended_at)
             elif job.kind is _Kind.FLUSH:
                 result = None

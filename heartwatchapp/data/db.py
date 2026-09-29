@@ -21,11 +21,29 @@ from __future__ import annotations
 
 import contextlib
 import csv
+import os
 import sqlite3
 import time
+from collections.abc import Mapping
 from pathlib import Path
 
-DB_PATH = Path(__file__).resolve().parent / "heartwatch.db"
+# The app's real database file.
+DEFAULT_DB_PATH = Path(__file__).resolve().parent / "heartwatch.db"
+# Set this environment variable to run the whole app against a different
+# database file (e.g. a throwaway copy -- see scripts/demo_session.py).
+DB_PATH_ENV_VAR = "HEARTWATCH_DB_PATH"
+
+
+def resolve_db_path(environ: Mapping[str, str] = os.environ) -> Path:
+    """The database file the app should use: HEARTWATCH_DB_PATH if it's set
+    (and not empty), otherwise the real heartwatch.db next to this file.
+    Read once, when this module is first imported -- so it has to be set
+    before the app starts, not while it's running."""
+    override = environ.get(DB_PATH_ENV_VAR)
+    return Path(override).expanduser().resolve() if override else DEFAULT_DB_PATH
+
+
+DB_PATH = resolve_db_path()
 SCHEMA_PATH = Path(__file__).resolve().parent / "schema.sql"
 
 # Bumped whenever schema.sql changes in a way old data files won't have.
@@ -220,7 +238,7 @@ def list_sessions(
     return out
 
 
-def get_session_timeline(session_id: int) -> dict:
+def get_session_timeline(session_id: int, path: str | Path = DB_PATH) -> dict:
     """Backs the per-session detail view.
 
     Returns {"session": {...}, "hr": [(ts, bpm), ...],
@@ -232,8 +250,11 @@ def get_session_timeline(session_id: int) -> dict:
     so collapsing it to a scalar would throw away data the detail view
     needs -- the IMU series here is (ts, ax, ay, az, gx, gy, gz) tuples
     instead. HR and predictions match the (ts, value) shape as described.
+
+    `path` defaults to the app's real database; tests pass a fixture path
+    instead, same as init_db() and get_db_info() already do.
     """
-    with contextlib.closing(_connect()) as conn:
+    with contextlib.closing(_connect(path)) as conn:
         session_row = conn.execute(
             "SELECT * FROM sessions WHERE id = ?", (session_id,)
         ).fetchone()

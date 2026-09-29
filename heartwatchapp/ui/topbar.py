@@ -61,10 +61,17 @@ class Topbar(QWidget):
         lay.addWidget(self.subtitle)
         lay.addStretch(1)
 
+        # Reuses the ConnPill look (same pill styling in theme.py) for a
+        # second, unrelated status: whether the local Ollama summary
+        # feature is available. See llm/worker.py / main.py for who sets it.
+        self.ai_pill = QLabel("AI: checking…")
+        self.ai_pill.setObjectName("ConnPill")
+
         self.conn_pill = QLabel("Disconnected")
         self.conn_pill.setObjectName("ConnPill")
         self.battery = BatteryIndicator(theme)
 
+        lay.addWidget(self.ai_pill)
         lay.addWidget(self.conn_pill)
         lay.addWidget(self.battery)
 
@@ -74,3 +81,13 @@ class Topbar(QWidget):
 
     def set_connection(self, connected: bool, name: str = "") -> None:
         self.conn_pill.setText(f"Connected · {name}" if connected else "Disconnected")
+
+    def set_ai_status(self, ready: bool, message: str) -> None:
+        """Called at startup with the result of llm.client.health_check(),
+        and again after each AI summary request -- "unavailable" if Ollama
+        couldn't be reached or the model is missing, "ready" once a request
+        gets an answer (see LlmWorker.health_checked). Never blocks, never
+        pops a dialog -- just updates this pill. The full message (what to
+        install or run) is in the tooltip so it doesn't crowd the topbar."""
+        self.ai_pill.setText("AI: ready" if ready else "AI: unavailable")
+        self.ai_pill.setToolTip(message)
