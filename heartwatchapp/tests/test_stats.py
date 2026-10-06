@@ -19,6 +19,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from ..data import db, stats
 
@@ -78,9 +79,11 @@ class ComputeSessionStatsTests(unittest.TestCase):
         )
         result = stats.compute_session_stats(session_id, path=self.db_path)
 
-        # Sitting [10s,30s) = 20s, Walking [30s,40s) = 10s, Sitting [40s,60s] = 20s.
-        self.assertAlmostEqual(result["activity_seconds"]["Sitting"], 40.0)
-        self.assertAlmostEqual(result["activity_seconds"]["Walking"], 10.0)
+        # Each prediction owns the 5s window ending at its timestamp:
+        # Sitting [5s,10s) = 5s, Walking [25s,30s) = 5s, Sitting [35s,40s)
+        # = 5s. 10s-25s, 30s-35s and 40s-60s have no prediction.
+        self.assertAlmostEqual(result["activity_seconds"]["Sitting"], 10.0)
+        self.assertAlmostEqual(result["activity_seconds"]["Walking"], 5.0)
         self.assertEqual(result["prediction_count"], 3)
         self.assertEqual(result["low_confidence_count"], 1)  # the 0.2-confidence row
 
@@ -101,8 +104,9 @@ class ComputeSessionStatsTests(unittest.TestCase):
 class RelationalFactsTests(unittest.TestCase):
     """Time per activity, and which activity the peak HR happened during."""
 
-    # Predictions are window END times: Sitting [10s,30s), Walking [30s,40s),
-    # Sitting [40s,60s] -- 40s Sitting, 10s Walking in total.
+    # Predictions are window END times, each owning the 5s before it:
+    # Sitting [5s,10s), Walking [25s,30s), Sitting [35s,40s) -- 10s Sitting,
+    # 5s Walking in total. [10s,25s), [30s,35s) and [40s,60s] are gaps.
     PREDICTIONS = [(10_000, "Sitting", 0.95), (30_000, "Walking", 0.9), (40_000, "Sitting", 0.9)]
 
     setUp = ComputeSessionStatsTests.setUp
@@ -119,23 +123,28 @@ class RelationalFactsTests(unittest.TestCase):
 
     def test_time_per_activity_sums_correctly(self) -> None:
         result = self._stats_with_peak_at(35_000)
-        self.assertEqual(result["activity_seconds"], {"Sitting": 40.0, "Walking": 10.0})
-        # Everything from the first prediction (10s) to the end (60s) is covered.
-        self.assertAlmostEqual(sum(result["activity_seconds"].values()), 50.0)
+        self.assertEqual(result["activity_seconds"], {"Sitting": 10.0, "Walking": 5.0})
+        # Three 5s windows, no overlap: 15s attributed out of 60s.
+        self.assertAlmostEqual(sum(result["activity_seconds"].values()), 15.0)
 
     def test_peak_during_walking(self) -> None:
-        self.assertEqual(self._stats_with_peak_at(35_000)["peak_hr_activity"], "Walking")
+        self.assertEqual(self._stats_with_peak_at(27_000)["peak_hr_activity"], "Walking")
 
-    def test_peak_during_sitting(self) -> None:
-        self.assertEqual(self._stats_with_peak_at(20_000)["peak_hr_activity"], "Sitting")
+    def test_peak_at_a_window_start_belongs_to_that_window(self) -> None:
+        # 35s is where the Sitting window ending at 40s starts (inclusive).
+        self.assertEqual(self._stats_with_peak_at(35_000)["peak_hr_activity"], "Sitting")
 
-    def test_peak_at_session_end_counts_as_last_activity(self) -> None:
-        self.assertEqual(self._stats_with_peak_at(60_000)["peak_hr_activity"], "Sitting")
+    def test_peak_between_prediction_windows_is_none(self) -> None:
+        # 20s is in the [10s,25s) gap no prediction covers.
+        self.assertIsNone(self._stats_with_peak_at(20_000)["peak_hr_activity"])
 
-    def test_peak_outside_every_prediction_window_is_none(self) -> None:
-        # 5s is before the first prediction's window end (10s), so no
-        # activity covers it.
-        self.assertIsNone(self._stats_with_peak_at(5_000)["peak_hr_activity"])
+    def test_peak_at_session_end_after_last_prediction_is_none(self) -> None:
+        # The last prediction (40s) owns [35s,40s); nothing after it.
+        self.assertIsNone(self._stats_with_peak_at(60_000)["peak_hr_activity"])
+
+    def test_peak_at_start_of_first_window_counts(self) -> None:
+        # The first prediction (10s) owns [5s,10s), which includes 5s.
+        self.assertEqual(self._stats_with_peak_at(5_000)["peak_hr_activity"], "Sitting")
 
     def test_no_predictions_gives_no_peak_activity(self) -> None:
         session_id = self._make_session(hr_rows=[(0, 80, 0.9)], ended_at=60_000)
@@ -147,7 +156,111 @@ class RelationalFactsTests(unittest.TestCase):
             prediction_rows=[(10_000, "walking", 0.9)], ended_at=60_000
         )
         result = stats.compute_session_stats(session_id, path=self.db_path)
-        self.assertEqual(result["activity_seconds"], {"Walking": 50.0})
+        # The single prediction at 10s owns [5s,10s).
+        self.assertEqual(result["activity_seconds"], {"Walking": 5.0})
+
+
+class WindowConventionTests(unittest.TestCase):
+    """PREDICTION_TIMESTAMP_MARKS: which time each prediction is credited
+    with. Every expected value below is worked out by hand from the rule in
+    data/stats.py's _activity_segments() docstring."""
+
+    setUp = ComputeSessionStatsTests.setUp
+    tearDown = ComputeSessionStatsTests.tearDown
+    _make_session = ComputeSessionStatsTests._make_session
+
+    def _transition_session(self) -> int:
+        """Walking predictions at 5s, 10s, ..., 210s, then Running at 215s,
+        ..., 255s; the session ends at 255s. One HR sample per second, 100
+        bpm except a 150 bpm peak at exactly 210s -- the first second of
+        Running."""
+        predictions = [(t * 1000, "Walking", 0.9) for t in range(5, 211, 5)]
+        predictions += [(t * 1000, "Running", 0.9) for t in range(215, 256, 5)]
+        hr = [(t * 1000, 150 if t == 210 else 100, 0.9) for t in range(0, 255)]
+        return self._make_session(hr_rows=hr, prediction_rows=predictions, ended_at=255_000)
+
+    def test_peak_at_a_transition_belongs_to_the_new_activity(self) -> None:
+        result = stats.compute_session_stats(self._transition_session(), path=self.db_path)
+        # Walking 5s..210s owns [0s,210s) = 210s; Running 215s..255s owns
+        # [210s,255s) = 45s. 210s is in the Running window ending at 215s.
+        self.assertEqual(result["activity_seconds"], {"Walking": 210.0, "Running": 45.0})
+        self.assertEqual(result["peak_hr_activity"], "Running")
+
+    def test_start_convention_shifts_every_window_forward(self) -> None:
+        session_id = self._transition_session()
+        with mock.patch.object(stats, "PREDICTION_TIMESTAMP_MARKS", "start"):
+            result = stats.compute_session_stats(session_id, path=self.db_path)
+        # Walking 5s..210s owns [5s,215s) = 210s; Running 215s..250s owns
+        # [215s,255s) = 40s, and the one at 255s would own [255s,260s),
+        # which is past the session's end. [0s,5s) belongs to nothing.
+        # 210s is now inside Walking's [210s,215s).
+        self.assertEqual(result["activity_seconds"], {"Walking": 210.0, "Running": 40.0})
+        self.assertEqual(result["peak_hr_activity"], "Walking")
+
+    def test_predictions_every_window_cover_the_whole_session(self) -> None:
+        # Sitting 5s..30s owns [0s,30s); Standing 35s..60s owns [30s,60s).
+        predictions = [
+            (t * 1000, "Sitting" if t <= 30 else "Standing", 0.9) for t in range(5, 61, 5)
+        ]
+        session_id = self._make_session(prediction_rows=predictions, ended_at=60_000)
+        result = stats.compute_session_stats(session_id, path=self.db_path)
+        self.assertEqual(result["activity_seconds"], {"Sitting": 30.0, "Standing": 30.0})
+        self.assertEqual(sum(result["activity_seconds"].values()), result["duration_s"])
+
+    def test_overlapping_windows_are_not_double_counted(self) -> None:
+        # A prediction every 2.5s: each owns only the 2.5s since the one
+        # before it, so 24 predictions cover 60s, not 24 x 5s = 120s.
+        predictions = [
+            (t, "Walking" if t <= 30_000 else "Running", 0.9) for t in range(2_500, 60_001, 2_500)
+        ]
+        session_id = self._make_session(prediction_rows=predictions, ended_at=60_000)
+        result = stats.compute_session_stats(session_id, path=self.db_path)
+        self.assertEqual(result["activity_seconds"], {"Walking": 30.0, "Running": 30.0})
+
+    def _session_missing_30s(self, hr_rows=()) -> int:
+        """Walking predictions every 5s from 5s to 60s, except 30s."""
+        predictions = [(t * 1000, "Walking", 0.9) for t in range(5, 61, 5) if t != 30]
+        return self._make_session(hr_rows=hr_rows, prediction_rows=predictions, ended_at=60_000)
+
+    def test_missing_prediction_leaves_exactly_one_window_unattributed(self) -> None:
+        result = stats.compute_session_stats(self._session_missing_30s(), path=self.db_path)
+        # [25s,30s) had no prediction; 35s still owns only [30s,35s).
+        self.assertEqual(result["activity_seconds"], {"Walking": 55.0})
+        self.assertEqual(result["duration_s"] - 55.0, 5.0)
+
+    def test_peak_inside_a_gap_is_none(self) -> None:
+        hr = [(0, 80, 0.9), (27_000, 140, 0.9), (50_000, 90, 0.9)]
+        result = stats.compute_session_stats(self._session_missing_30s(hr), path=self.db_path)
+        self.assertEqual(result["max_hr"], 140)
+        self.assertIsNone(result["peak_hr_activity"])
+
+    def test_open_session_gets_nothing_past_the_last_prediction(self) -> None:
+        # Still recording (no ended_at): the last prediction is at 15s, a
+        # peak at 20s is after it, and "now" is far later.
+        session_id = self._make_session(
+            hr_rows=[(1_000, 90, 0.9), (20_000, 130, 0.9)],
+            prediction_rows=[(t * 1000, "Walking", 0.9) for t in (5, 10, 15)],
+            ended_at=None,
+        )
+        result = stats.compute_session_stats(session_id, path=self.db_path)
+        self.assertEqual(result["activity_seconds"], {"Walking": 15.0})
+        self.assertGreater(result["duration_s"], 15.0)
+        self.assertIsNone(result["peak_hr_activity"])
+
+    def test_activities_are_keyed_in_first_appearance_order(self) -> None:
+        # Walking [0s,5s) + [10s,15s) = 10s; Sitting [5s,10s) + [15s,20s) =
+        # 10s. A tie, so the one seen first (Walking) is listed first.
+        predictions = [(5_000, "Walking", 0.9), (10_000, "Sitting", 0.9)]
+        predictions += [(15_000, "Walking", 0.9), (20_000, "Sitting", 0.9)]
+        session_id = self._make_session(prediction_rows=predictions, ended_at=20_000)
+        result = stats.compute_session_stats(session_id, path=self.db_path)
+        self.assertEqual(
+            list(result["activity_seconds"].items()), [("Walking", 10.0), ("Sitting", 10.0)]
+        )
+        self.assertIn(
+            "Time by activity: Walking 10 seconds, Sitting 10 seconds.",
+            stats.format_stats_plain(result),
+        )
 
 
 class FormatStatsPlainTests(unittest.TestCase):
@@ -165,8 +278,28 @@ class FormatStatsPlainTests(unittest.TestCase):
             stats.format_stats_plain(self.FULL),
             "The session lasted 6 minutes 20 seconds. Average heart rate was 93 bpm "
             "and peak heart rate was 111 bpm, reached during Walking. Time by "
-            "activity: Sitting 2 minutes 10 seconds, Walking 2 minutes 30 seconds, "
+            "activity: Walking 2 minutes 30 seconds, Sitting 2 minutes 10 seconds, "
             "Standing 1 minute 40 seconds.",
+        )
+
+    def test_ties_keep_first_appearance_order(self) -> None:
+        # Standing and Walking tie at 60s; Standing appeared first in the
+        # session (it's first in the dict), so it's listed first.
+        text = stats.format_stats_plain(
+            {**self.FULL, "activity_seconds": {"Standing": 60.0, "Walking": 60.0, "Sitting": 90.0}}
+        )
+        self.assertTrue(
+            text.endswith(
+                "Time by activity: Sitting 1 minute 30 seconds, Standing 1 minute, "
+                "Walking 1 minute."
+            )
+        )
+
+    def test_single_activity_is_the_whole_session(self) -> None:
+        text = stats.format_stats_plain({**self.FULL, "activity_seconds": {"Walking": 380.0}})
+        self.assertNotIn("Time by activity", text)
+        self.assertTrue(
+            text.endswith("reached during Walking. Activity: Walking for the whole session.")
         )
 
     def test_no_predictions_falls_back_to_logged_label(self) -> None:

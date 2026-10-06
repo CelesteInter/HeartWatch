@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .. import config
 from ..data import db, stats
 from ..llm.worker import LlmWorker
 from .charts import _CanvasHost
@@ -242,13 +243,15 @@ class SessionDetailDialog(QDialog):
 
         lay.addStretch(1)
 
-    # -- AI summary, with a structural fallback to raw stats -------------
+    # -- Session summary: plain by default, AI-phrased if asked for ------
     #
-    # In order: compute the numbers -> too little data? show plain numbers
-    # and stop -> otherwise ask the LLM worker (which strips, checks, and
-    # logs the reply before sending it back) -> show the reply only if it
-    # passed, else plain numbers. The whole reply arrives at once, never
-    # piece by piece, so nothing unchecked is ever on screen.
+    # In order: compute the numbers -> HEARTWATCH_SUMMARY_MODE is "plain"
+    # (the default; see config.py)? show the app's own sentences and stop
+    # -> too little data? show plain numbers and stop -> otherwise ask the
+    # LLM worker (which strips, checks, and logs the reply before sending
+    # it back) -> show the reply only if it passed, else plain numbers. The
+    # whole reply arrives at once, never piece by piece, so nothing
+    # unchecked is ever on screen.
     def _summary_card(self) -> Card:
         card = Card(pad=16)
         card.body().addWidget(heading("Session summary"))
@@ -279,6 +282,12 @@ class SessionDetailDialog(QDialog):
             caveat_label = muted(caveat)
             caveat_label.setWordWrap(True)
             card.body().addWidget(caveat_label)
+
+        if config.summary_mode() == config.SUMMARY_MODE_PLAIN:
+            # The plain summary IS the summary here, so there's no
+            # generated one to be missing -- no "not enough data" note.
+            self._summary_label.setText(self._fallback_text)
+            return card
 
         if not stats.is_summarizable(session_stats):
             # Too little data for the model to say anything real -- don't

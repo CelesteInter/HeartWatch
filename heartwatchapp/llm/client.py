@@ -144,10 +144,30 @@ async def chat(messages: list[dict], options: dict | None = None) -> str:
 
     `options` defaults to MODEL_OPTIONS; summaries pass SUMMARY_OPTIONS.
     Raises the same errors as stream_chat."""
-    response = await _client.chat(
+    response = await chat_response(messages, options)
+    return response.message.content or ""
+
+
+async def chat_response(messages: list[dict], options: dict | None = None) -> ollama.ChatResponse:
+    """chat(), but returns Ollama's whole response object instead of just
+    the text -- including its timings (load_duration, eval_duration, in
+    nanoseconds). Only scripts/eval_summaries.py needs those; the app calls
+    chat()."""
+    return await _client.chat(
         model=MODEL_NAME,
         messages=messages,
         stream=False,
         options=options if options is not None else MODEL_OPTIONS,
     )
-    return response.message.content or ""
+
+
+async def server_info() -> dict:
+    """{"version": Ollama's version, "model": MODEL_NAME, "digest": the
+    pulled model's digest, or None if it isn't pulled}. For recording
+    exactly what an evaluation ran against (scripts/eval_summaries.py).
+    Raises the same connection errors as chat()."""
+    version_response = await _client._client.get("/api/version")
+    version_response.raise_for_status()
+    listed = await _client.list()
+    digest = next((m.digest for m in listed.models if m.model == MODEL_NAME), None)
+    return {"version": version_response.json().get("version"), "model": MODEL_NAME, "digest": digest}

@@ -36,6 +36,7 @@ from ..data.stats import format_duration_words, ordered_activities
 __all__ = [
     "SYSTEM_PROMPT",
     "activity_fact_lines",
+    "build_session_summary_messages",
     "format_duration_words",
     "render_session_summary_prompt",
     "session_fact_lines",
@@ -86,7 +87,8 @@ def session_fact_lines(stats: dict) -> list[str]:
 
 def activity_fact_lines(stats: dict) -> dict[str, str]:
     """{activity label: its fact line}, one per activity with at least one
-    prediction, in canonical order (Sitting, Walking, Standing, Running)."""
+    prediction, most time first -- the same order format_stats_plain()
+    uses (both go through data/stats.py's ordered_activities())."""
     return {
         label: f"Time {label}: {format_duration_words(seconds)}"
         for label, seconds in ordered_activities(stats.get("activity_seconds") or {})
@@ -101,8 +103,8 @@ def render_session_summary_prompt(stats: dict) -> str:
         Average heart rate: 93 bpm
         Peak heart rate: 111 bpm
         Peak heart rate occurred during: Walking
-        Time Sitting: 1 minute 10 seconds
         Time Walking: 3 minutes 10 seconds
+        Time Sitting: 1 minute 10 seconds
 
     Every number in the returned text comes from a fact line and is one the
     model is allowed to use; llm/validate.py rejects any reply containing a
@@ -120,3 +122,14 @@ def render_session_summary_prompt(stats: dict) -> str:
         "time spent in each activity."
     )
     return "\n".join(lines)
+
+
+def build_session_summary_messages(stats: dict) -> list[dict]:
+    """The exact chat messages sent to the model for one session summary:
+    SYSTEM_PROMPT, then render_session_summary_prompt(stats). Shared by
+    llm/worker.py and scripts/eval_summaries.py, so the evaluation measures
+    the same request the app makes."""
+    return [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": render_session_summary_prompt(stats)},
+    ]

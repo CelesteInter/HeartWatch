@@ -121,10 +121,7 @@ class LlmWorker(QObject):
         self.health_checked.emit(status)
 
     async def _do_session_summary(self, request_id: int, stats: dict) -> None:
-        messages = [
-            {"role": "system", "content": prompts.SYSTEM_PROMPT},
-            {"role": "user", "content": prompts.render_session_summary_prompt(stats)},
-        ]
+        messages = prompts.build_session_summary_messages(stats)
         try:
             raw_text = await llm_client.chat(messages, options=llm_client.SUMMARY_OPTIONS)
         except ollama.ResponseError as exc:
