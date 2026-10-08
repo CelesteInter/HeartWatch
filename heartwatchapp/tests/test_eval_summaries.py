@@ -15,11 +15,14 @@ from __future__ import annotations
 
 import contextlib
 import datetime
+import hashlib
 import io
 import re
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from ..data import db
 from ..llm import client as llm_client
@@ -108,6 +111,51 @@ class RealDatabaseTests(unittest.TestCase):
             self.assertEqual(list(Path(tmp).iterdir()), [])
         self.assertEqual(code, 2)
         self.assertIn("real database", stderr.getvalue())
+
+
+class ExistingDestinationTests(unittest.TestCase):
+    """--db and --overwrite, like scripts/demo_session.py's. Ollama is never
+    contacted: refusal happens first, and the overwrite test stands in a
+    fake _evaluate(). Everything lives in a temporary folder."""
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+        self.dest = self.root / "eval.db"
+        self.out = self.root / "results"
+        self.out.mkdir()
+
+    def run_main(self, *args: str) -> tuple[int, str]:
+        stderr, stdout = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stderr(stderr), contextlib.redirect_stdout(stdout):
+            code = eval_summaries.main(["--db", str(self.dest), "--out", str(self.out), *args])
+        return code, stderr.getvalue()
+
+    def test_existing_db_is_refused_without_overwrite(self) -> None:
+        self.dest.write_bytes(b"someone's file, not an eval database")
+        before = hashlib.sha256(self.dest.read_bytes()).hexdigest()
+        code, err = self.run_main()
+        self.assertEqual(code, 2)
+        self.assertIn("already exists", err)
+        self.assertIn("--overwrite", err)
+        self.assertEqual(hashlib.sha256(self.dest.read_bytes()).hexdigest(), before)
+        self.assertEqual(sorted(p.name for p in self.root.iterdir()), ["eval.db", "results"])
+        self.assertEqual(list(self.out.iterdir()), [])
+
+    def test_existing_db_is_replaced_with_overwrite(self) -> None:
+        self.dest.write_bytes(b"not a database")
+
+        async def fake_evaluate(messages, session_stats, seeds):
+            server = {"model": "fake", "digest": "fake", "version": "fake"}
+            return server, []
+
+        with mock.patch.object(eval_summaries, "_evaluate", fake_evaluate):
+            code, err = self.run_main("--overwrite", "--runs", "1")
+        self.assertEqual(code, 0, err)
+        with contextlib.closing(sqlite3.connect(str(self.dest))) as conn:
+            self.assertEqual(conn.execute("PRAGMA integrity_check").fetchone()[0], "ok")
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0], 1)
 
 
 class DataSeedTests(unittest.TestCase):

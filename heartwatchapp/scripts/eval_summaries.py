@@ -58,9 +58,10 @@ from heartwatchapp.data import stats as stats_mod  # noqa: E402
 from heartwatchapp.llm import client as llm_client  # noqa: E402
 from heartwatchapp.llm import prompts, validate  # noqa: E402
 from heartwatchapp.scripts.demo_db import (  # noqa: E402
+    DestinationExistsError,
     RealDatabaseError,
     build_demo_db,
-    ensure_not_real_db,
+    check_destination,
 )
 
 RESULTS_DIR = Path(__file__).resolve().parent.parent / "eval_results"
@@ -96,7 +97,7 @@ def build_session(db_path: str | Path, data_seed: int) -> dict:
     """Builds the demo session from `data_seed` on a new database at
     `db_path` (never the real one -- RealDatabaseError) and returns its
     compute_session_stats() facts."""
-    target, session_id = build_demo_db(db_path, copy_real=False, data_seed=data_seed)
+    target, session_id = build_demo_db(db_path, data_seed=data_seed)
     return stats_mod.compute_session_stats(session_id, path=target)
 
 
@@ -225,7 +226,14 @@ def main(argv: list[str] | None = None) -> int:
         "--data-seed", type=int, default=0, help="seed for the demo session's values (default 0)"
     )
     parser.add_argument(
-        "--db", help="new database file for the demo session (default: a temporary file)"
+        "--db",
+        help="new database file for the demo session; refused if it already exists, "
+        "unless --overwrite is given (default: a temporary file)",
+    )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="let --db replace an existing file (and its -wal/-shm/-journal)",
     )
     parser.add_argument(
         "--out", type=Path, default=RESULTS_DIR, help=f"results root (default {RESULTS_DIR})"
@@ -239,8 +247,10 @@ def main(argv: list[str] | None = None) -> int:
     else:
         db_path = Path(tempfile.mkdtemp(prefix="heartwatch-eval-")) / "heartwatch_eval.db"
     try:
-        ensure_not_real_db(db_path)
-    except RealDatabaseError as exc:
+        # The default temporary folder is brand new, so only a --db path
+        # can already be taken.
+        check_destination(db_path, args.overwrite or not args.db)
+    except (RealDatabaseError, DestinationExistsError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 

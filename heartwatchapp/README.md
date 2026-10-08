@@ -160,11 +160,8 @@ checked for which number goes with which (only the peak rule applies).
 3. To see a data-rich session, either:
    - run `python -m heartwatchapp.scripts.demo_session` (plain summary)
      or `HEARTWATCH_SUMMARY_MODE=llm python -m
-     heartwatchapp.scripts.demo_session` (AI path), which copies the
-     database to a temporary file, adds one data-rich session to the
-     copy, launches the app on the copy with the `heartwatch.llm` log at
-     DEBUG, and prints the new session's number -- the real database is
-     never written (the script refuses to run against it); or
+     heartwatchapp.scripts.demo_session` (AI path) -- see **Demo session**
+     below; or
    - click Settings -> Developer -> **Seed demo session** (this *does*
      write to your real database -- seeded sessions include dummy
      predictions, `model_version "demo-dummy"`), or leave the app running
@@ -174,6 +171,39 @@ checked for which number goes with which (only the peak rule applies).
 
 To point the app at any other database file, set `HEARTWATCH_DB_PATH`
 before launching; with it unset the app uses `data/heartwatch.db` as usual.
+
+### Demo session
+
+The demo script makes a separate, brand-new database with one example
+session in it, so you can see a full summary without touching anyone's
+real recordings.
+
+- **Default:** `python -m heartwatchapp.scripts.demo_session` builds a new
+  database in a temporary folder (the app's own schema from
+  `data/db.py`'s `init_db()`, plus one demo session), launches the app on
+  it with the `heartwatch.llm` log at DEBUG, and prints the new session's
+  number. The real database is never opened, copied or read.
+- `--db PATH` chooses where the demo database goes. If a file is already
+  there, the script stops (exit code 2) and leaves it alone, so a mistyped
+  path can't delete anything. Add `--overwrite` to replace it; the file and
+  any `-wal` / `-shm` / `-journal` next to it are deleted first (a leftover
+  `-wal` would otherwise be replayed into the new file). The default
+  temporary folder is always new, so it never needs `--overwrite`.
+- `--data-seed N` fixes the heart-rate values; leave it out for random
+  ones. `--no-launch` builds the database and exits.
+- `--from-real` starts from a copy of the real database instead of an
+  empty one, for the rare case you want real sessions alongside the demo.
+  It prints *"Close HeartWatch before using --from-real; copying while the
+  app is writing can produce an inconsistent copy."* It copies the real
+  `.db`, `-wal` and `-shm` files at the filesystem level (`shutil.copy2`)
+  and never opens the real database with SQLite in any mode; it opens only
+  the copy, runs `PRAGMA integrity_check`, and if that isn't `ok` deletes
+  the copy and exits with an error.
+- In both modes the script refuses to run (exit code 2) if the
+  destination is the real database, comparing resolved paths and, if both
+  exist, `os.path.samefile`, so symlinks, hard links and relative paths
+  can't get around it. "The real database" means what the app would open:
+  `HEARTWATCH_DB_PATH` if set, otherwise `data/heartwatch.db`.
 
 **Measured benchmark** (Dylan's MacBook Air, Apple M2, 8 GB):
 `gemma3:1b` -- 883 MB, 100% GPU-resident on Apple M2, 2048 context. Time
@@ -192,6 +222,7 @@ before touching `llm/` or the database.
 | Catch only `httpx.RequestError` for "Ollama down" | Catch `CONNECTION_ERRORS` (includes built-in `ConnectionError`) |
 | Check numbers as substrings in tests ("134" contains "4") | Compare digit tokens from `re.findall(r"\d+")` |
 | Open the real DB with SQLite `mode=ro` | Use copies via `HEARTWATCH_DB_PATH`. WAL mode still touches the `-shm`/`-wal` files. |
+| Open the real DB from scripts, even with `mode=ro` (it still changes `-shm`) | Build a fresh DB; if a copy is truly needed, copy the files at the filesystem level and open only the copy. |
 | Use pytest | It isn't installed. Use stdlib `unittest`. |
 | Update test expectations by copying new outputs | Recompute expected values by hand from the rule being tested |
 
@@ -226,6 +257,13 @@ facts sent, plain fallback), and `summary.md` (a table with two empty
 columns to label by hand). With fixed seeds `gemma3:1b`'s replies are
 byte-identical, so running it again with the same arguments reproduces
 the same replies.
+
+`--db PATH` keeps the throwaway database somewhere you choose instead of a
+temporary folder. Like the demo script, it won't replace a file that's
+already there: it stops with exit code 2 and leaves the file alone unless
+you add `--overwrite`, which deletes that file (and any `-wal` / `-shm` /
+`-journal` next to it) before building. The default temporary folder is
+always new, so it never needs `--overwrite`.
 
 **Ollama facts.** Ollama runs from the macOS menu-bar app. It unloads the
 model after 5 idle minutes by default, so the first request after that
@@ -266,13 +304,14 @@ heartwatchapp/
 ├── ml/inference.py      TFLite activity classifier stub
 ├── scripts/
 │   ├── benchmark_ollama.py  standalone viability check, run by hand
-│   ├── demo_db.py           builds the demo session on a DB copy (shared by the two below)
-│   ├── demo_session.py      launch the app on a DB copy with a data-rich demo session
+│   ├── demo_db.py           builds the demo session on a fresh DB (shared by the two below)
+│   ├── demo_session.py      launch the app on a fresh demo DB with a data-rich session
 │   └── eval_summaries.py    repeatable AI-summary evaluation (writes eval_results/)
 └── tests/
     ├── test_stats.py          unit tests for data/stats.py (no live Ollama needed)
     ├── test_validate.py       unit tests for llm/validate.py (no live Ollama needed)
     ├── test_demo_session.py   demo tooling: real-DB guard, demo facts, seeded predictions
+    ├── test_demo_db_fresh.py  demo DB never touches the real DB's files (fake real DB, live WAL)
     ├── test_summary_mode.py   HEARTWATCH_SUMMARY_MODE and the dialog's two paths
     └── test_eval_summaries.py eval script's pure parts (no live Ollama needed)
 ```

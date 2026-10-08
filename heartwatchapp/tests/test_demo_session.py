@@ -61,8 +61,8 @@ class RealDatabaseGuardTests(unittest.TestCase):
 
 class DemoSessionFactsTests(unittest.TestCase):
     """The session scripts/demo_db.py builds, read back through
-    data/stats.py. Built on new empty temporary databases (copy_real=False),
-    so the real database isn't opened."""
+    data/stats.py. Built on new empty temporary databases (build_demo_db()'s
+    default), so the real database isn't opened."""
 
     def test_every_phase_is_credited_in_full_and_the_peak_is_running(self) -> None:
         # Phases are Sitting 70s, Walking 140s, Running 45s, Standing 85s;
@@ -72,7 +72,7 @@ class DemoSessionFactsTests(unittest.TestCase):
         for data_seed in range(6):
             with self.subTest(data_seed=data_seed), tempfile.TemporaryDirectory() as tmp:
                 path, session_id = demo_db.build_demo_db(
-                    Path(tmp) / "demo.db", copy_real=False, data_seed=data_seed
+                    Path(tmp) / "demo.db", data_seed=data_seed
                 )
                 result = stats.compute_session_stats(session_id, path=path)
             self.assertEqual(
@@ -87,7 +87,7 @@ class DemoSessionFactsTests(unittest.TestCase):
         for _ in range(2):
             with tempfile.TemporaryDirectory() as tmp:
                 path, session_id = demo_db.build_demo_db(
-                    Path(tmp) / "demo.db", copy_real=False, data_seed=7
+                    Path(tmp) / "demo.db", data_seed=7
                 )
                 results.append(stats.compute_session_stats(session_id, path=path))
         self.assertEqual(results[0]["avg_hr"], results[1]["avg_hr"])
@@ -95,7 +95,7 @@ class DemoSessionFactsTests(unittest.TestCase):
 
     def test_builder_refuses_real_db(self) -> None:
         with self.assertRaises(demo_db.RealDatabaseError):
-            demo_db.build_demo_db(db.DEFAULT_DB_PATH, copy_real=False)
+            demo_db.build_demo_db(db.DEFAULT_DB_PATH, real=db.DEFAULT_DB_PATH)
 
 
 class SeededPredictionTests(unittest.TestCase):
