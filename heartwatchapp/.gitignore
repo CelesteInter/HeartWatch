@@ -6,3 +6,4 @@ __pycache__/
 *.db-shm
 ml/models/
 .ua/
+eval_results/

@@ -27,11 +27,15 @@ import time
 from collections.abc import Mapping
 from pathlib import Path
 
-# The app's real database file.
-DEFAULT_DB_PATH = Path(__file__).resolve().parent / "heartwatch.db"
 # Set this environment variable to run the whole app against a different
 # database file (e.g. a throwaway copy -- see scripts/demo_session.py).
-DB_PATH_ENV_VAR = "HEARTWATCH_DB_PATH"
+# Defined in config.py, which imports nothing else from the app, so scripts
+# can read the name without importing this module (which would fix DB_PATH
+# below too early).
+from ..config import DB_PATH_ENV_VAR
+
+# The app's real database file.
+DEFAULT_DB_PATH = Path(__file__).resolve().parent / "heartwatch.db"
 
 
 def resolve_db_path(environ: Mapping[str, str] = os.environ) -> Path:

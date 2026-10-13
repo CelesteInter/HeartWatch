@@ -14,6 +14,7 @@ from __future__ import annotations
 import re
 import unittest
 
+from ..data import stats
 from ..llm import prompts, validate
 from ..ml.inference import CLASSES
 
@@ -98,17 +99,26 @@ class PromptTests(unittest.TestCase):
             re.findall(r"\d+", "\n".join(fact_lines)),
         )
 
-    def test_one_activity_line_per_predicted_class_in_canonical_order(self) -> None:
+    def test_one_activity_line_per_predicted_class_most_time_first(self) -> None:
         prompt = prompts.render_session_summary_prompt(FACT_STATS)
         self.assertEqual(
             [line for line in prompt.splitlines() if line.startswith("Time ")],
             [
-                "Time Sitting: 2 minutes 10 seconds",
                 "Time Walking: 2 minutes 30 seconds",
+                "Time Sitting: 2 minutes 10 seconds",
                 "Time Standing: 1 minute 40 seconds",
             ],
         )
         self.assertIn("Peak heart rate occurred during: Walking", prompt)
+
+    def test_activity_lines_tie_break_matches_the_plain_summary(self) -> None:
+        # Running and Sitting tie at 30s; Running appeared first.
+        tied = {**FACT_STATS, "activity_seconds": {"Running": 30.0, "Sitting": 30.0, "Walking": 50.0}}
+        self.assertEqual(list(prompts.activity_fact_lines(tied)), ["Walking", "Running", "Sitting"])
+        self.assertIn(
+            "Walking 50 seconds, Running 30 seconds, Sitting 30 seconds",
+            stats.format_stats_plain(tied),
+        )
 
     def test_peak_activity_line_left_out_when_unknown(self) -> None:
         prompt = prompts.render_session_summary_prompt({**FACT_STATS, "peak_hr_activity": None})
