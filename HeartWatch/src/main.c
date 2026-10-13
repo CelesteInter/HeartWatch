@@ -9,7 +9,7 @@
 #include "esp_timer.h"
 
 // Custom headers
-#include "max30102.h"
+#include "max30101.h"
 #include "sh1107.h"
 
 // Macros for GPIO
@@ -113,10 +113,10 @@ void app_main(void)
     ESP_ERROR_CHECK(result);
     ESP_LOGI(TAG, "WHO_AM_I: 0x%02X", mpu_data[0]);
 
-    // MAX30102 I2C configuration
+    // MAX30101 I2C configuration
     i2c_device_config_t i2c_heartrate_config = {
         .dev_addr_length = I2C_ADDR_BIT_LEN_7,
-        .device_address = MAX30102_ADDRESS,
+        .device_address = MAX30101_ADDRESS,
         .scl_speed_hz = 100000,
     };
     // bus handler
@@ -124,10 +124,10 @@ void app_main(void)
     // Error checking & bus setup
     ESP_ERROR_CHECK(i2c_master_bus_add_device(bus_handle, &i2c_heartrate_config, &heartrate_handle));
 
-    ESP_ERROR_CHECK(max30102_init(heartrate_handle));
-    ESP_LOGI(HEART_RATE_TAG, "MAX30102 initialized");
+    ESP_ERROR_CHECK(max30101_init(heartrate_handle));
+    ESP_LOGI(HEART_RATE_TAG, "MAX30101 initialized");
 
-    // variables to hold MAX30102 values
+    // Variables to hold MAX30101 values
     uint32_t ir_value;
     uint32_t ir_baseline = 0;
     uint32_t signal_peak = 0;
@@ -136,9 +136,9 @@ void app_main(void)
     // Main polling loop
 	while (1) {
 
-        // Read Heartrate BPM
+        // Read heart rate BPM
         for (int sample_count = 0; sample_count < 8; sample_count++) {
-            if (!max30102_read_ir(heartrate_handle, &ir_value)) {
+            if (!max30101_read_ir(heartrate_handle, &ir_value)) {
                 break;
             }
 
