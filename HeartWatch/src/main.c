@@ -11,6 +11,7 @@
 // Custom headers
 #include "max30101.h"
 #include "sh1107.h"
+#include "hud.h"
 
 // Macros for GPIO
 #define USER_LED GPIO_NUM_21
@@ -64,15 +65,15 @@ void app_main(void)
     };
     ESP_ERROR_CHECK(sh1107_init(&display_config));
     ESP_ERROR_CHECK(sh1107_clear());
-    ESP_ERROR_CHECK(sh1107_print("HeartWatch\nReady!\n"));
+    displayHUD(0);
 
-    ESP_ERROR_CHECK(sh1107_print("Test additional print\n"));
-    ESP_ERROR_CHECK(sh1107_print("Initializing...\n"));
-
-    vTaskDelay(500);
+    vTaskDelay(200);
 
     ESP_ERROR_CHECK(sh1107_clear());
 
+    vTaskDelay(100);
+
+    displayHUD(2);
     // I2C master configuration
     i2c_master_bus_config_t i2c_mst_config = {
         .clk_source = I2C_CLK_SRC_DEFAULT,
@@ -166,7 +167,7 @@ void app_main(void)
              * now_ms - last_beat_ms > 300 : theoretical maximum limit for BPM of 200 
              *          -> 60000 ms in a minute / 300 ms = 200 BPM
              */
-            if (ir_value > 50000 && signal > 500 && signal > previous_peak * 3 / 2 &&
+            if (ir_value > 5000 && signal > 500 && signal > previous_peak * 3 / 2 &&
                 now_ms - last_beat_ms > 300) {
                 // Ensure first detected pulse doesn't provide a data entry
                 if (last_beat_ms != 0) {
@@ -174,12 +175,12 @@ void app_main(void)
                     uint32_t bpm = 60000 / (now_ms - last_beat_ms);
                     // If the BPM is reasonable, print it to log
                     if (bpm >= 40 && bpm <= 220) {
-                        ESP_LOGE(HEART_RATE_TAG, "Heart rate: %lu BPM", (unsigned long)bpm);
+                        ESP_LOGE(HEART_RATE_TAG, "Heart rate: %3lu BPM", (unsigned long)bpm);
 
-                        // print to OLED
-                        ESP_ERROR_CHECK(sh1107_clear());
-                        char message[20];
-                        snprintf(message, sizeof(message),"Heart rate: %lu BPM", (unsigned long)bpm);
+                        ESP_ERROR_CHECK(sh1107_set_cursor(5, 7));
+                        char message[14];
+
+                        snprintf(message, sizeof(message),"  HR: %3lu BPM", (unsigned long)bpm);
                         ESP_ERROR_CHECK(sh1107_print(message));
                     }
                 }
@@ -202,6 +203,7 @@ void app_main(void)
 		// vTaskDelay(pdMS_TO_TICKS(250));
 		// gpio_set_level(USER_LED, 1);
 		// vTaskDelay(pdMS_TO_TICKS(250));
+        vTaskDelay(pdMS_TO_TICKS(10));
 	}
 }
 
