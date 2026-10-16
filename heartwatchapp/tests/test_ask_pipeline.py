@@ -224,6 +224,15 @@ class ModeTests(PipelineCase):
         # Simple questions still work.
         self.assertEqual(self.ask("average heart rate today", "hybrid", None).outcome, "query")
 
+    def test_a_distance_filter_is_unsupported_without_the_model(self) -> None:
+        for mode in ("rules", "hybrid"):
+            with self.subTest(mode=mode):
+                model = FakeModel(form("avg_hr", "Running", "all"))
+                answer = self.ask("average heart rate on my 5 km run", mode, model)
+                self.assertEqual((answer.source, answer.outcome), ("rules", "unsupported"))
+                self.assertEqual(answer.text, answers.UNSUPPORTED_REPLY)
+                self.assertEqual(model.calls, [])
+
     def test_unsupported_from_either_parser(self) -> None:
         self.assertEqual(self.ask("what's the weather", "hybrid").text, answers.UNSUPPORTED_REPLY)
         model = FakeModel(form(intent="unsupported"))

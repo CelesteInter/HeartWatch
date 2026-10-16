@@ -42,6 +42,11 @@ class AcceptTests(unittest.TestCase):
             with self.subTest(question=question):
                 self.assert_accepts(question, metric, activity, range_name)
 
+    def test_since_the_start_of_the_week(self) -> None:
+        # "start" here is part of a this_week phrase, not a command.
+        self.assert_accepts("average heart rate since the start of the week",
+                            "avg_hr", None, "this_week")
+
     def test_a_longer_phrase_wins(self) -> None:
         # "how long did I record" is total_time, not "how long" + activity time.
         self.assert_accepts("how long did I record today", "total_time", None, "today")
@@ -142,9 +147,35 @@ class UnsupportedTests(unittest.TestCase):
                 self.assertIsNone(result.request)
 
     def test_things_v1_cant_do(self) -> None:
-        # Charts and commands are refused outright, even next to metric
-        # words, instead of being passed to the AI.
+        # Charts, commands and filters v1 can't apply are refused outright,
+        # even next to metric words, instead of being passed to the AI.
         for question in ("show me a chart of my heart rate this week",
-                         "start recording a new session", "how many steps did I walk"):
+                         "start recording a new session", "how many steps did I walk",
+                         "average heart rate on my 5 km run",
+                         "peak heart rate over the last 3 miles"):
             with self.subTest(question=question):
                 self.assertEqual(rules.parse(question).status, "unsupported")
+
+    def test_start_stop_pause_only_as_commands(self) -> None:
+        # Command phrases, or the question's first word: unsupported.
+        for question in ("Start recording", "please stop recording", "pause the session",
+                         "can you start a session", "Start tracking my run",
+                         "stop", "pause my heart rate"):
+            with self.subTest(question=question):
+                self.assertEqual(rules.parse(question).status, "unsupported")
+        # Anywhere else they're ordinary (unknown) words: deferred, not refused.
+        for question in ("average heart rate from the start of my last run",
+                         "peak heart rate before I had to stop yesterday",
+                         "how long did I walk without a pause today"):
+            with self.subTest(question=question):
+                self.assertEqual(rules.parse(question).status, "deferred")
+
+    def test_pace_and_speed_are_not_refused(self) -> None:
+        # They describe an activity, not a filter v1 can't apply; the
+        # parser doesn't know them, so it defers to the AI.
+        for question in ("average heart rate at a walking pace",
+                         "peak heart rate at running speed"):
+            with self.subTest(question=question):
+                result = rules.parse(question)
+                self.assertEqual(result.status, "deferred")
+                self.assertRegex(result.reason, "unrecognized words: .*(pace|speed)")

@@ -79,7 +79,9 @@ _LATEST_NOUNS = ("session", "recording", "run", "walk", "jog")
 RANGE_SYNONYMS: dict[str, tuple[str, ...]] = {
     "today": ("today", "so far today"),
     "yesterday": ("yesterday",),
-    "this_week": ("this week", "so far this week", "this calendar week"),
+    "this_week": (
+        "this week", "so far this week", "this calendar week", "since the start of the week",
+    ),
     "last_week": ("last week", "previous week", "last calendar week"),
     "last_7_days": ("last 7 days", "past 7 days", "last seven days", "past seven days"),
     "last_30_days": ("last 30 days", "past 30 days", "last thirty days", "past thirty days"),
@@ -106,14 +108,25 @@ AMBIGUOUS_RANGE_PHRASES = (
 )
 
 # Things v1 can't do at all -- charts, commands, data the watch doesn't
-# record (README, "Known limitations"). Any of these makes the keyword
-# parser answer "unsupported" straight away, even next to metric words
-# ("show me a chart of my heart rate"), instead of handing the question to
-# the AI, which would answer the metric and drop the rest.
+# record, or a filter it can't apply ("my 5 km run") (README, "Known
+# limitations"). Any of these makes the keyword parser answer
+# "unsupported" straight away, even next to metric words ("show me a chart
+# of my heart rate"), instead of handing the question to the AI, which
+# would answer the metric and drop the rest.
 UNSUPPORTED_WORDS = (
-    "chart", "charts", "graph", "graphs", "plot", "plots", "draw", "start", "stop", "pause",
-    "delete", "export", "step", "steps", "calorie", "calories", "sleep", "weather",
-    "distance", "pace", "speed", "km", "kilometers", "miles",
+    "chart", "charts", "graph", "graphs", "plot", "plots", "draw", "delete", "export",
+    "step", "steps", "calorie", "calories", "sleep", "weather", "distance", "km",
+    "kilometers", "miles",
+)
+# start / stop / pause are commands only in these phrases, or as the
+# question's first word (COMMAND_FIRST_WORDS); elsewhere ("since the start
+# of the week") they're ordinary words.
+COMMAND_FIRST_WORDS = ("start", "stop", "pause")
+UNSUPPORTED_COMMAND_PHRASES = tuple(
+    f"{verb} {thing}"
+    for verb in COMMAND_FIRST_WORDS
+    for thing in ("recording", "a recording", "a session", "a new session", "the session",
+                  "my session", "the recording")
 )
 
 _NON_WORD = re.compile(r"[^a-z0-9']+")

@@ -110,13 +110,16 @@ PATH`) is written by someone who hasn't seen the parser, and **the parser
 must never be tuned against it** -- otherwise its score stops meaning
 anything.
 
-On the dev questions (October 16, 2026, second prompt version): false
-accepts were 0 of 30 for `rules`, 10 of 30 for `llm` and 0 of 30 for
-`hybrid` (details in the run's `summary.md`). The model on its own mostly
-fails by inventing an activity the question never named, or answering an
-off-topic question. Some of the prompt's examples are close to dev
-questions, so the `llm` number on the dev set is optimistic; the held-out
-set is the fair measure.
+On the dev questions (October 16, 2026, experiment 3): false accepts were
+0 of 30 for `rules`, 12 of 30 for `llm` and 0 of 30 for `hybrid` (details
+in the run's `summary.md`). The model on its own mostly fails by inventing
+an activity the question never named, answering an off-topic question, or
+reading "this week" as the last 7 days. Experiments 1 and 2 reported
+better `llm` scores (8 and 10 false accepts), but those were inflated:
+several prompt examples repeated or closely paraphrased dev questions.
+Experiment 3 is the first with no prompt example near a dev question
+(`tests/test_ask_vocab.py` now enforces it), so it is the clean dev
+baseline. The held-out set remains the real measure.
 
 The "(N sessions)" after an answer counts only the sessions that
 contributed to the number: for "time spent Running", sessions with some

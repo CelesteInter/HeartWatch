@@ -6,8 +6,8 @@ is sure -- exactly one metric, at most one activity, at most one time
 range, and every other word is a known filler word ("what", "was", "my",
 ...). Anything else is "deferred" (in hybrid mode the AI model gets it), and
 a question that names no metric and no activity at all, or asks for
-something v1 can't do (a chart, a command, steps -- vocab.UNSUPPORTED_WORDS),
-is "unsupported".
+something v1 can't do (a chart, a command, steps, a distance filter --
+vocab.UNSUPPORTED_WORDS and the command phrases), is "unsupported".
 A wrong answer is much worse than passing the question on, so when in
 doubt it defers.
 
@@ -84,6 +84,12 @@ def _table() -> list[tuple[str, str, re.Pattern[str]]]:
         rows += [("activity", activity, vocab.phrase_pattern(p)) for p in phrases]
     rows += [("session", "", vocab.phrase_pattern(p)) for p in vocab.SESSION_WORDS]
     rows += [("unsupported", "", vocab.phrase_pattern(p)) for p in vocab.UNSUPPORTED_WORDS]
+    rows += [("unsupported", "", vocab.phrase_pattern(p))
+             for p in vocab.UNSUPPORTED_COMMAND_PHRASES]
+    # A command word as the very first word of the question ("start
+    # tracking my run").
+    rows += [("unsupported", "", re.compile(rf"^{word}(?![a-z0-9'])"))
+             for word in vocab.COMMAND_FIRST_WORDS]
     return rows
 
 

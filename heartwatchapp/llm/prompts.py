@@ -169,15 +169,18 @@ ASK_RANGE_DESCRIPTIONS = {
 }
 # (question, metric, activity, range) -- includes the this_week /
 # last_week / last_7_days contrast the model got wrong in the Phase A
-# smoke test ("this week" came back as last_week).
+# smoke test ("this week" came back as last_week). None of these may
+# repeat or closely paraphrase a dev question (eval/ask_questions_dev.jsonl):
+# tests/test_ask_vocab.py fails above 0.6 word overlap.
 ASK_EXAMPLES = (
-    ("what was my average heart rate this week", "avg_hr", None, "this_week"),
+    ("avg pulse for the current week", "avg_hr", None, "this_week"),
     ("peak heart rate today", "peak_hr", None, "today"),
-    ("average heart rate last week", "avg_hr", None, "last_week"),
-    ("average heart rate over the past 7 days", "avg_hr", None, "last_7_days"),
-    ("how long did I walk yesterday", "time_in_activity", "Walking", "yesterday"),
-    ("highest heart rate while running in my last session", "peak_hr", "Running", "latest_session"),
-    ("how many sessions have I recorded", "session_count", None, None),
+    ("mean bpm for the week before this one", "avg_hr", None, "last_week"),
+    ("average bpm across the most recent 7 days, today included", "avg_hr", None,
+     "last_7_days"),
+    ("walking duration yesterday", "time_in_activity", "Walking", "yesterday"),
+    ("max bpm while jogging in my newest recording", "peak_hr", "Running", "latest_session"),
+    ("count of recorded sessions", "session_count", None, None),
     ("number of sessions this week", "session_count", None, "this_week"),
     ("how much time have I recorded this month so far", None, None, None),
     ("tell me a joke", None, None, None),

@@ -25,6 +25,12 @@ from ..ml.inference import CLASSES
 from ..scripts import eval_ask
 
 
+def token_jaccard(a: str, b: str) -> float:
+    """|shared words| / |all words|, on vocab.normalize()d word sets."""
+    x, y = set(vocab.normalize(a).split()), set(vocab.normalize(b).split())
+    return len(x & y) / len(x | y) if x | y else 0.0
+
+
 class SingleSourceTests(unittest.TestCase):
     def test_vocab_is_the_query_layer_and_the_classifier(self) -> None:
         self.assertEqual(vocab.METRICS, tuple(queries.METRIC_UNITS))
@@ -67,6 +73,24 @@ class SingleSourceTests(unittest.TestCase):
     def test_the_prompt_contrasts_the_three_week_like_ranges(self) -> None:
         ranges = {example[3] for example in prompts.ASK_EXAMPLES}
         self.assertTrue({"this_week", "last_week", "last_7_days"} <= ranges)
+
+    def test_no_prompt_example_is_close_to_a_dev_question(self) -> None:
+        # A prompt example that (nearly) repeats a dev question lets the
+        # model score well on that question for the wrong reason. Limit:
+        # Jaccard overlap of normalized word sets at most 0.6.
+        dev = eval_ask.load_questions(eval_ask.DEFAULT_QUESTIONS)
+        for example, *_ in prompts.ASK_EXAMPLES:
+            for q in dev:
+                with self.subTest(example=example, id=q["id"]):
+                    overlap = token_jaccard(example, q["question"])
+                    self.assertLessEqual(overlap, 0.6, f"{example!r} ~ {q['question']!r}")
+
+    def test_token_jaccard(self) -> None:
+        # {how, long, did, i, walk, yesterday} vs the same plus nothing: 1.0;
+        # {a, b} vs {b, c}: 1 shared of 3 = 1/3.
+        self.assertEqual(token_jaccard("How long did I walk yesterday?",
+                                       "how long did i walk yesterday"), 1.0)
+        self.assertAlmostEqual(token_jaccard("a b", "b c"), 1 / 3)
 
     def test_the_prompt_never_mentions_health(self) -> None:
         # The prompt must not invite interpretation: no guard word appears.
