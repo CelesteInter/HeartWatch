@@ -6,9 +6,11 @@ data/stats.py, and fetched through data/queries.py. These tests check that
 rule from every side: the metric functions on hand-built rows (A), that the
 Dashboard's path and the session summary agree on the demo session (B, C),
 several sessions combined without a window crossing between them (D),
-calendar-day ranges including daylight-saving days (E), request validation
-(F), a scan for SQL arithmetic outside stats.py (G), empty data (H), the
-summary text staying byte-identical (I), and the Sessions table's rows.
+calendar-day ranges including daylight-saving days and the AI bar's week
+and latest-session ranges (E), request validation (F), a scan for SQL
+arithmetic outside stats.py (G), empty data (H), the summary text staying
+byte-identical (I), the simulated-predictions flag, and the Sessions
+table's rows.
 
 Every expected value is worked out by hand from the rule in a comment, not
 copied from the code's output. Every database is a temporary fixture or a
@@ -270,6 +272,28 @@ class MultiSessionTests(unittest.TestCase):
         # Any activity: 13 + 5 + 5 = 23.
         self.assertEqual(self.db.run("time_in_activity", None, "last_7_days").value, 23.0)
 
+    def test_activity_filtered_counts_only_contributing_sessions(self) -> None:
+        # A, B and C all have activity data, but Walking time comes only
+        # from A (10 s) and C (3 s): 2 sessions, not 3. Running only from B:
+        # 1. Standing is a real 0 that no session contributed to: 0.
+        # Unfiltered, all three contribute: 3.
+        cases = [("Walking", 13.0, 2), ("Running", 5.0, 1), ("Sitting", 5.0, 1),
+                 ("Standing", 0.0, 0), (None, 23.0, 3)]
+        for activity, value, n in cases:
+            with self.subTest(activity=activity):
+                result = self.db.run("time_in_activity", activity, "last_7_days")
+                self.assertEqual((result.value, result.n_sessions), (value, n))
+
+    def test_activity_filtered_heart_rate_counts_only_sessions_with_samples_in_it(self) -> None:
+        # Walking windows hold samples in A (60, 90) and C (120 x 3): 2
+        # sessions. Running's window in B, [0, 5 s), holds B's 0 s sample: 1.
+        # Unfiltered: A, B, C all have samples: 3.
+        for metric in ("avg_hr", "peak_hr"):
+            with self.subTest(metric=metric):
+                self.assertEqual(self.db.run(metric, "Walking", "last_7_days").n_sessions, 2)
+                self.assertEqual(self.db.run(metric, "Running", "last_7_days").n_sessions, 1)
+                self.assertEqual(self.db.run(metric, None, "last_7_days").n_sessions, 3)
+
     def test_breakdown_order_breaks_ties_by_first_appearance(self) -> None:
         # Walking 13 first; Running and Sitting tie at 5 s, and Running
         # appeared first (B, Oct 5, before C, Oct 8).
@@ -349,8 +373,131 @@ class ResolveRangeTests(unittest.TestCase):
         self.assertGreater(end, NOW * 1000)
 
     def test_unknown_range_name(self) -> None:
-        with self.assertRaisesRegex(ValueError, "Unknown range 'yesterday'"):
-            queries.resolve_range("yesterday", NOW, DENVER)
+        # Was "yesterday", which is a real range since the AI bar (v1).
+        with self.assertRaisesRegex(ValueError, "Unknown range 'fortnight'"):
+            queries.resolve_range("fortnight", NOW, DENVER)
+
+    def test_yesterday_is_the_previous_calendar_day(self) -> None:
+        # NOW is Thu Oct 8 12:00 MDT: yesterday is Oct 7 00:00 to Oct 8 00:00.
+        self.assertEqual(
+            queries.resolve_range("yesterday", NOW, DENVER), (oct_midnight(7), oct_midnight(8))
+        )
+
+    def test_yesterday_around_midnight(self) -> None:
+        # At exactly Oct 8 00:00 it's already Oct 8, so yesterday is Oct 7;
+        # 1 ms earlier it's still Oct 7, so yesterday is Oct 6.
+        self.assertEqual(
+            queries.resolve_range("yesterday", oct_midnight(8), DENVER),
+            (oct_midnight(7), oct_midnight(8)),
+        )
+        self.assertEqual(
+            queries.resolve_range("yesterday", oct_midnight(8) - 1, DENVER),
+            (oct_midnight(6), oct_midnight(7)),
+        )
+
+    def test_this_week_and_last_week(self) -> None:
+        # Thu Oct 8: this ISO week began Mon Oct 5 00:00 MDT; last week is
+        # Mon Sep 28 00:00 to Mon Oct 5 00:00 (Sep 28 00:00 MDT = 06:00 UTC).
+        self.assertEqual(queries.resolve_range("this_week", NOW, DENVER), (oct_midnight(5), NOW))
+        self.assertEqual(
+            queries.resolve_range("last_week", NOW, DENVER),
+            (utc_ms(2026, 9, 28, 6), oct_midnight(5)),
+        )
+
+    def test_week_boundary_on_monday_midnight(self) -> None:
+        # At exactly Mon Oct 5 00:00 the new week has begun (and is empty so
+        # far); 1 ms earlier it's still Sunday, in the week of Sep 28.
+        monday = oct_midnight(5)
+        self.assertEqual(queries.resolve_range("this_week", monday, DENVER), (monday, monday))
+        self.assertEqual(
+            queries.resolve_range("last_week", monday, DENVER), (utc_ms(2026, 9, 28, 6), monday)
+        )
+        self.assertEqual(
+            queries.resolve_range("this_week", monday - 1, DENVER),
+            (utc_ms(2026, 9, 28, 6), monday - 1),
+        )
+        self.assertEqual(
+            queries.resolve_range("last_week", monday - 1, DENVER),
+            (utc_ms(2026, 9, 21, 6), utc_ms(2026, 9, 28, 6)),
+        )
+
+    def test_last_week_across_the_fall_back_is_169_hours(self) -> None:
+        # Wed Nov 4 2026 12:00 MST = 19:00 UTC. This week: Mon Nov 2 00:00
+        # MST = 07:00 UTC. Last week: Mon Oct 26 00:00 MDT = 06:00 UTC, up
+        # to Nov 2 07:00 UTC -- 7 days plus the extra fall-back hour.
+        now = utc_ms(2026, 11, 4, 19)
+        nov2 = utc_ms(2026, 11, 2, 7)
+        self.assertEqual(queries.resolve_range("this_week", now, DENVER), (nov2, now))
+        start, end = queries.resolve_range("last_week", now, DENVER)
+        self.assertEqual((start, end), (utc_ms(2026, 10, 26, 6), nov2))
+        self.assertEqual(end - start, 169 * 3_600_000)
+
+    def test_latest_session_is_not_a_time_window(self) -> None:
+        with self.assertRaisesRegex(ValueError, "latest_session isn't a time window"):
+            queries.resolve_range("latest_session", NOW, DENVER)
+
+
+class LatestSessionTests(unittest.TestCase):
+    """range "latest_session": the most recently started finished session.
+    Each session's heart rate is one flat value, so which session was
+    picked can be read straight off its average."""
+
+    def setUp(self) -> None:
+        self.fixture = FixtureDb(self)
+        self.base = oct_midnight(8) + 3_600_000   # Oct 8 01:00 MDT
+
+    def add(self, offset_min: int, bpm: int, finished: bool = True, predictions=()) -> int:
+        start = self.base + offset_min * 60_000
+        return self.fixture.add(
+            start, start + 10_000 if finished else None,
+            hr=[(0, bpm), (5000, bpm)], predictions=predictions,
+        )
+
+    def test_no_sessions_is_empty(self) -> None:
+        result = self.fixture.run("avg_hr", range_name="latest_session")
+        self.assertEqual((result.value, result.n_sessions, result.empty), (None, 0, True))
+
+    def test_one_session(self) -> None:
+        self.add(0, 90)
+        result = self.fixture.run("avg_hr", range_name="latest_session")
+        self.assertEqual((result.value, result.n_sessions), (90.0, 1))
+        self.assertEqual(self.fixture.run("session_count", range_name="latest_session").value, 1)
+
+    def test_several_sessions_picks_the_latest_start(self) -> None:
+        # Added out of order: the 30-minute one started last, so it's the
+        # one used (80 bpm), not the one added last (70 bpm).
+        self.add(10, 70)
+        self.add(30, 80)
+        self.add(20, 60)
+        self.assertEqual(self.fixture.run("avg_hr", range_name="latest_session").value, 80.0)
+
+    def test_same_start_picks_the_higher_id(self) -> None:
+        self.add(10, 70)
+        self.add(10, 75)
+        self.assertEqual(self.fixture.run("avg_hr", range_name="latest_session").value, 75.0)
+
+    def test_a_live_session_is_left_out(self) -> None:
+        # The still-recording session started later, but only finished
+        # sessions count, so the finished 90 bpm one is the latest.
+        self.add(0, 90)
+        self.add(60, 140, finished=False)
+        self.assertEqual(self.fixture.run("avg_hr", range_name="latest_session").value, 90.0)
+
+    def test_an_activity_means_that_activity_within_the_latest_session(self) -> None:
+        # The earlier session was all Running at 150 bpm; the latest one has
+        # Walking [0, 5 s) then Running [5, 10 s). Running in the latest
+        # session is its 5 s sample only (90 bpm), not the earlier run.
+        self.add(0, 150, predictions=[(5000, "Running"), (10000, "Running")])
+        start = self.base + 30 * 60_000
+        self.fixture.add(
+            start, start + 10_000, hr=[(0, 100), (5000, 90)],
+            predictions=[(5000, "Walking"), (10000, "Running")],
+        )
+        self.assertEqual(
+            self.fixture.run("avg_hr", "Running", range_name="latest_session").value, 90.0
+        )
+        breakdown = queries.activity_breakdown("latest_session", path=self.fixture.path)
+        self.assertEqual(breakdown.items, (("Walking", 5.0), ("Running", 5.0)))
 
     def test_a_session_at_midnight_belongs_to_the_new_day(self) -> None:
         fixture = FixtureDb(self)
@@ -408,7 +555,8 @@ class ValidationTests(unittest.TestCase):
 # database module and every UI file, and fails if an aggregate shows up.
 SQL_AGGREGATE = re.compile(r"\b(AVG|SUM|MAX|MIN)\s*\(", re.IGNORECASE)
 SCANNED_FILES = [APP_DIR / "data" / "queries.py", APP_DIR / "data" / "db.py",
-                 *sorted((APP_DIR / "ui").glob("*.py"))]
+                 *sorted((APP_DIR / "ui").glob("*.py")),
+                 *sorted((APP_DIR / "ask").glob("*.py"))]
 # (file name, matched text) -> why it's allowed. Empty: nothing in these
 # files needs a SQL aggregate today.
 ALLOWED_AGGREGATES: dict[tuple[str, str], str] = {}
@@ -446,6 +594,11 @@ class NoSqlArithmeticTests(unittest.TestCase):
                     if (path.name, hit) not in ALLOWED_AGGREGATES
                 ]
                 self.assertEqual(found, [], f"SQL arithmetic in {path.name}; use data/stats.py")
+
+    def test_the_ai_bar_package_is_scanned(self) -> None:
+        names = {(p.parent.name, p.name) for p in SCANNED_FILES}
+        for name in ("pipeline.py", "rules.py", "answers.py"):
+            self.assertIn(("ask", name), names)
 
     def test_the_scanner_catches_sql_and_ignores_python(self) -> None:
         source = (
@@ -488,6 +641,44 @@ class EmptyDataTests(unittest.TestCase):
 
 
 class SimulatedPredictionTests(unittest.TestCase):
+    def test_run_flags_simulated_only_when_activity_windows_are_used(self) -> None:
+        # One session today, Walking [0, 5 s) and [5, 10 s), samples at 0 and
+        # 5 s. With the dummy classifier, anything that uses the windows
+        # (an activity filter, or time in an activity) is simulated; plain
+        # heart rate, session count and total time never are. With a real
+        # model version, nothing is.
+        start = oct_midnight(8) + 3_600_000
+        cases = [
+            ("avg_hr", "Walking", True), ("peak_hr", "Walking", True),
+            ("time_in_activity", "Walking", True), ("time_in_activity", None, True),
+            ("avg_hr", None, False), ("peak_hr", None, False),
+            ("session_count", None, False), ("total_time", None, False),
+        ]
+        for model_version, dummy in (("demo-dummy", True), ("cnn-v1", False)):
+            fixture = FixtureDb(self)
+            fixture.add(start, start + 10_000, hr=[(0, 90), (5000, 100)],
+                        predictions=[(5000, "Walking"), (10000, "Walking")],
+                        model_version=model_version)
+            for metric, activity, uses_windows in cases:
+                with self.subTest(model_version=model_version, metric=metric, activity=activity):
+                    result = fixture.run(metric, activity, range_name="today")
+                    self.assertFalse(result.empty)
+                    self.assertEqual(result.simulated, dummy and uses_windows)
+
+    def test_run_ignores_dummy_sessions_that_fed_nothing(self) -> None:
+        # Two sessions: a dummy one with no Running, and a real one with
+        # Running. Heart rate while Running comes only from the real one, so
+        # it isn't simulated -- the same "only sessions that fed it" rule as
+        # the breakdown's.
+        start = oct_midnight(8) + 3_600_000
+        fixture = FixtureDb(self)
+        fixture.add(start, start + 10_000, hr=[(0, 90)], predictions=[(5000, "Walking")],
+                    model_version="demo-dummy")
+        fixture.add(start + 60_000, start + 70_000, hr=[(0, 130)],
+                    predictions=[(5000, "Running")], model_version="cnn-v1")
+        result = fixture.run("avg_hr", "Running", range_name="today")
+        self.assertEqual((result.value, result.n_sessions, result.simulated), (130.0, 1, False))
+
     def test_simulated_only_when_dummy_predictions_feed_the_breakdown(self) -> None:
         start = oct_midnight(8) + 3_600_000
         for model_version, expected in (("demo-dummy", True), ("cnn-v1", False)):

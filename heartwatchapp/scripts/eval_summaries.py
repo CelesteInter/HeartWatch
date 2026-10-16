@@ -178,9 +178,12 @@ def format_summary_md(meta: dict, records: list[dict]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def make_output_dir(root: Path, now: datetime.datetime | None = None) -> Path:
-    """root/<YYYYMMDD-HHMMSS>/, with -2, -3, ... added if that already exists."""
-    stamp = (now or datetime.datetime.now()).strftime("%Y%m%d-%H%M%S")
+def make_output_dir(
+    root: Path, now: datetime.datetime | None = None, prefix: str = ""
+) -> Path:
+    """root/<prefix><YYYYMMDD-HHMMSS>/, with -2, -3, ... added if that
+    already exists. scripts/eval_ask.py passes prefix "ask-"."""
+    stamp = prefix + (now or datetime.datetime.now()).strftime("%Y%m%d-%H%M%S")
     candidate, n = root / stamp, 1
     while candidate.exists():
         n += 1

@@ -177,17 +177,33 @@ def add_demo_session(
     random.Random(data_seed) if only `data_seed` is given, or from fresh
     randomness if neither is. Refuses the real database (`real`, or
     real_db_path())."""
+    total_s = sum(seconds for _, seconds, _ in DEMO_PHASES)
+    # Ended two minutes ago, so the default "Last 7 days" filter shows it.
+    t0 = int(time.time() * 1000) - (total_s + 120) * 1000
+    return add_phases_session(path, t0, rng=rng, data_seed=data_seed, real=real)
+
+
+def add_phases_session(
+    path: Path,
+    t0: int,
+    phases: list[tuple[str, int, int]] = DEMO_PHASES,
+    rng: random.Random | None = None,
+    data_seed: int | None = None,
+    real: str | Path | None = None,
+) -> int:
+    """add_demo_session(), but starting at `t0` (epoch ms) and with your
+    own (label, seconds, bpm) phases. For scripts that need sessions at
+    fixed times, e.g. scripts/eval_ask.py placing sessions around a pinned
+    "now". Same randomness and the same real-database refusal."""
     from heartwatchapp.data import db, seed
 
     path = ensure_not_real_db(path, real)
     if rng is None:
         rng = random.Random(data_seed)
-    total_s = sum(seconds for _, seconds, _ in DEMO_PHASES)
-    # Ended two minutes ago, so the default "Last 7 days" filter shows it.
-    t0 = int(time.time() * 1000) - (total_s + 120) * 1000
+    total_s = sum(seconds for _, seconds, _ in phases)
 
     hr_rows, pred_rows, offset = [], [], 0
-    for label, seconds, bpm in DEMO_PHASES:
+    for label, seconds, bpm in phases:
         for s in range(seconds):
             hr_rows.append((t0 + (offset + s) * 1000, int(round(bpm + rng.gauss(0, 3))), 0.9))
         for window_end in range(5, seconds + 1, 5):

@@ -1,12 +1,24 @@
-"""Always-visible data-query assistant bar.
+"""Always-visible "Ask about your data" bar.
 
-Layout only for now (shell milestone). The Anthropic API worker thread lands in
-step 4 of the build order -- submitting today just shows a stub result panel.
+Plain-language overview: a question typed here goes through ask/pipeline.py.
+Questions the keyword parser understands are answered straight away, on
+the GUI thread (no network, no model). Others go to the local model through
+LlmWorker.request_parse() while the bar shows "Thinking…"; a
+PendingRequest (ui/pending_request.py) gives that 10 s and makes sure a
+newer question always replaces an older one's answer. Every word shown --
+the reply, the "what I understood" line and the simulated-data caption --
+is written by ask/answers.py, never by the model.
+
+Focusing the input preloads the model (at most once per Ollama keep-alive
+period) so the first AI answer is quicker.
 """
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
+import time
+from pathlib import Path
+
+from PySide6.QtCore import QEvent, QObject, Qt, Signal
 from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import (
     QFrame,
@@ -18,7 +30,16 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .. import config
+from ..ask import answers, pipeline
+from ..llm import client as llm_client
+from ..llm.worker import LlmWorker
+from .pending_request import PendingRequest
 from .theme import Theme
+
+# How long an AI answer may take before the bar gives up on it (the same
+# budget as the session summary's).
+ASK_TIMEOUT_MS = 10_000
 
 PLACEHOLDER = 'Ask about your data — e.g. "What was my avg HR during walking today?"'
 
@@ -54,10 +75,29 @@ def _diamond(cx, cy, ry, rx):
 class AiBar(QWidget):
     query_submitted = Signal(str)
 
-    def __init__(self, theme: Theme, parent: QWidget | None = None):
+    def __init__(
+        self,
+        theme: Theme,
+        llm_worker: LlmWorker | None = None,
+        db_path: str | Path | None = None,
+        parent: QWidget | None = None,
+    ):
         super().__init__(parent)
         self.setObjectName("AiBar")
         self.theme = theme
+        self._llm_worker = llm_worker
+        # None: the app's database. Tests point this at a fixture.
+        self._db_path = db_path
+        # Last known AI status: None until the first health check answers.
+        self._ai_ready: bool | None = None
+        self._last_preload: float | None = None
+        self._pending = PendingRequest(ASK_TIMEOUT_MS, self)
+        self._pending.timed_out.connect(self._on_timeout)
+        self._pending_question: pipeline.PendingQuestion | None = None
+        if llm_worker is not None:
+            llm_worker.parse_finished.connect(self._on_parse_finished)
+            llm_worker.parse_failed.connect(self._on_parse_failed)
+            llm_worker.health_checked.connect(self._on_health_checked)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(20, 10, 20, 12)
@@ -68,14 +108,26 @@ class AiBar(QWidget):
         self.result.setObjectName("AiResult")
         res_lay = QHBoxLayout(self.result)
         res_lay.setContentsMargins(12, 10, 8, 10)
+        texts = QVBoxLayout()
+        texts.setSpacing(4)
         self.result_text = QLabel("")
         self.result_text.setWordWrap(True)
-        self.result_text.setObjectName("Muted")
+        # "Average heart rate · Running · this week": muted and smaller.
+        self.understood_text = QLabel("")
+        self.understood_text.setObjectName("Muted")
+        font = self.understood_text.font()
+        font.setPointSizeF(font.pointSizeF() * 0.9)
+        self.understood_text.setFont(font)
+        self.caption_text = QLabel("")
+        self.caption_text.setWordWrap(True)
+        self.caption_text.setObjectName("Muted")
+        for label in (self.result_text, self.understood_text, self.caption_text):
+            texts.addWidget(label)
         dismiss = QPushButton("✕")
         dismiss.setObjectName("GhostButton")
         dismiss.setFixedSize(24, 24)
         dismiss.clicked.connect(lambda: self.result.setHidden(True))
-        res_lay.addWidget(self.result_text, 1)
+        res_lay.addLayout(texts, 1)
         res_lay.addWidget(dismiss, 0, Qt.AlignTop)
         self.result.setHidden(True)
         outer.addWidget(self.result)
@@ -89,6 +141,7 @@ class AiBar(QWidget):
         self.input.setObjectName("AiInput")
         self.input.setPlaceholderText(PLACEHOLDER)
         self.input.returnPressed.connect(self._submit)
+        self.input.installEventFilter(self)
 
         self.ask_btn = QPushButton("Ask")
         self.ask_btn.setObjectName("AccentButton")
@@ -103,14 +156,83 @@ class AiBar(QWidget):
         if not text:
             return
         self.query_submitted.emit(text)
-        # Stub response until the Anthropic worker thread is wired (build step 4).
-        self.show_result(
-            f'Query received: "{text}"\n\n'
-            "The data assistant is not connected yet — SQLite context + the "
-            "Anthropic API worker land in build step 4."
-        )
         self.input.clear()
+        # A new question replaces any answer still on its way.
+        self._pending.cancel()
+        self._pending_question = None
 
-    def show_result(self, text: str) -> None:
+        step = pipeline.begin(text, conn_or_path=self._db_path)
+        if isinstance(step, pipeline.Answer):
+            self.show_answer(step)
+            return
+        if self._llm_worker is None or self._ai_ready is False:
+            self.show_answer(self._finish(step, failure=pipeline.FAILURE_UNAVAILABLE))
+            return
+        self._pending_question = step
+        self.show_result(answers.THINKING_TEXT)
+        self._pending.start(self._llm_worker.request_parse(step.messages, step.format))
+
+    def _finish(self, step: pipeline.PendingQuestion, **reply) -> pipeline.Answer:
+        return pipeline.finish(step, conn_or_path=self._db_path, **reply)
+
+    def _take_pending(self, request_id: int) -> pipeline.PendingQuestion | None:
+        """The question `request_id` answers, if it's still the one shown."""
+        if not self._pending.claim(request_id):
+            return None
+        step, self._pending_question = self._pending_question, None
+        return step
+
+    def _on_parse_finished(self, request_id: int, raw: str) -> None:
+        step = self._take_pending(request_id)
+        if step is not None:
+            self.show_answer(self._finish(step, raw=raw))
+
+    def _on_parse_failed(self, request_id: int, reason: str) -> None:
+        step = self._take_pending(request_id)
+        if step is None:
+            return
+        failure = (
+            pipeline.FAILURE_UNAVAILABLE if reason == LlmWorker.PARSE_UNAVAILABLE
+            else pipeline.FAILURE_ERROR
+        )
+        self.show_answer(self._finish(step, failure=failure))
+
+    def _on_timeout(self, request_id: int) -> None:
+        step, self._pending_question = self._pending_question, None
+        if step is not None:
+            self.show_answer(self._finish(step, failure=pipeline.FAILURE_TIMEOUT))
+
+    def _on_health_checked(self, status) -> None:
+        self._ai_ready = status.ready
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:  # noqa: N802
+        if watched is self.input and event.type() == QEvent.FocusIn:
+            self._maybe_preload()
+        return super().eventFilter(watched, event)
+
+    def _maybe_preload(self) -> None:
+        """Loads the model when the input gets focus, at most once per
+        Ollama keep-alive period, and only in modes that use the model."""
+        if self._llm_worker is None or self._ai_ready is False:
+            return
+        if config.ask_mode() == config.ASK_MODE_RULES:
+            return
+        now = time.monotonic()
+        last = self._last_preload
+        if last is not None and now - last < llm_client.DEFAULT_KEEP_ALIVE_S:
+            return
+        self._last_preload = now
+        self._llm_worker.preload()
+
+    def show_answer(self, answer: pipeline.Answer) -> None:
+        self.show_result(answer.text, answer.understood, answer.caption)
+
+    def show_result(
+        self, text: str, understood: str | None = None, caption: str | None = None
+    ) -> None:
         self.result_text.setText(text)
+        self.understood_text.setText(understood or "")
+        self.understood_text.setHidden(understood is None)
+        self.caption_text.setText(caption or "")
+        self.caption_text.setHidden(caption is None)
         self.result.setHidden(False)

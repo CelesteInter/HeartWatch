@@ -5,6 +5,7 @@ Layout: sidebar (64px) · [ topbar / QStackedWidget / AI bar ] on the right.
 
 from __future__ import annotations
 
+from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import (
     QMainWindow,
     QScrollArea,
@@ -13,6 +14,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .. import config
 from ..data.writer import DatabaseWriter
 from ..llm.worker import LlmWorker
 from .ai_bar import AiBar
@@ -32,6 +34,12 @@ SECTION_META = [
     ("ML / Activity", "Model status and training pipeline"),
     ("Settings", "Pairing, streaming, data export"),
 ]
+
+# How often the AI pill re-checks Ollama (a `list` call, which never loads
+# the model): quickly while it's unavailable, so the pill turns "ready"
+# soon after Ollama starts, and rarely once it's up.
+HEALTH_PING_UNAVAILABLE_MS = 5_000
+HEALTH_PING_READY_MS = 45_000
 
 
 class HeartWatchApp(QMainWindow):
@@ -67,10 +75,15 @@ class HeartWatchApp(QMainWindow):
         rv.setSpacing(0)
 
         self.topbar = Topbar(theme)
+        self._health_timer: QTimer | None = None
         if self.llm_worker is not None:
-            self.llm_worker.health_checked.connect(
-                lambda status: self.topbar.set_ai_status(status.ready, status.message)
-            )
+            self.llm_worker.health_checked.connect(self._on_health_checked)
+            # The ping only matters when the AI bar may use the model.
+            if config.ask_mode() != config.ASK_MODE_RULES:
+                self._health_timer = QTimer(self)
+                self._health_timer.setInterval(HEALTH_PING_UNAVAILABLE_MS)
+                self._health_timer.timeout.connect(self.llm_worker.check_health)
+                self._health_timer.start()
         rv.addWidget(self.topbar)
 
         self.stack = QStackedWidget()
@@ -79,7 +92,7 @@ class HeartWatchApp(QMainWindow):
         self.scroll.setWidget(self.stack)
         rv.addWidget(self.scroll, 1)
 
-        self.ai_bar = AiBar(theme)
+        self.ai_bar = AiBar(theme, self.llm_worker)
         rv.addWidget(self.ai_bar)
 
         h.addWidget(right, 1)
@@ -110,6 +123,13 @@ class HeartWatchApp(QMainWindow):
 
         for view in (self.dashboard, self.live, self.sessions, self.ml, self.settings):
             self.stack.addWidget(self._pad(view))
+
+    def _on_health_checked(self, status) -> None:
+        self.topbar.set_ai_status(status.ready, status.message, status.daemon_reachable)
+        if self._health_timer is not None:
+            self._health_timer.setInterval(
+                HEALTH_PING_READY_MS if status.ready else HEALTH_PING_UNAVAILABLE_MS
+            )
 
     def _on_data_changed(self) -> None:
         """Seeding or deleting a session from the developer panel should be

@@ -19,7 +19,9 @@ Which sessions a range covers: a session belongs to a range if its
 started_at falls in the range's half-open [start, end), and then all of its
 samples count, so a session that runs past midnight counts on the day it
 started. Sessions still recording (ended_at IS NULL) are left out of every
-range-based number; see resolve_range() for the ranges themselves.
+range-based number; see resolve_range() for the ranges themselves. The one
+range that isn't a time window, "latest_session", is the single most
+recently started finished session (see _load_sessions()).
 
 Every function takes `conn` (an open connection to use) or `path` (a
 database file to open); with neither, the app's database (db.DB_PATH, read
@@ -33,7 +35,7 @@ import datetime
 import os
 import sqlite3
 import time
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -41,6 +43,10 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from ..ml.inference import CLASSES
 from . import db, stats
 from .seed import DUMMY_MODEL_VERSION
+
+# Shown under activity times that come from the dummy classifier. The
+# Dashboard (ui/dashboard.py) and the AI bar (ask/answers.py) both use it.
+SIMULATED_CAPTION = "Activity times are from simulated predictions."
 
 # metric name -> unit of its value.
 METRIC_UNITS = {
@@ -56,7 +62,15 @@ ACTIVITY_METRICS = frozenset({"avg_hr", "peak_hr", "time_in_activity"})
 
 # Calendar-day ranges: name -> how many calendar days, counting today.
 _CALENDAR_DAY_RANGES = {"today": 1, "last_7_days": 7, "last_30_days": 30}
-RANGE_NAMES = (*_CALENDAR_DAY_RANGES, "all")
+# Not a time window: the one most recently started finished session.
+LATEST_SESSION = "latest_session"
+# Every range a MetricRequest can name. The AI bar's parsers and its JSON
+# schema read this tuple (ask/vocab.py), so they can't offer a range that
+# resolve_range() doesn't know.
+RANGE_NAMES = (
+    "today", "yesterday", "this_week", "last_week", "last_7_days", "last_30_days", "all",
+    LATEST_SESSION,
+)
 # "all": SQLite's whole INTEGER range, so every started_at falls inside it.
 _ALL_RANGE = (-(2**63), 2**63 - 1)
 
@@ -107,10 +121,16 @@ def resolve_range(
     """(start_ms, end_ms) for a named range, half-open: [start, end).
 
     - "today": from local midnight to now.
+    - "yesterday": the previous calendar day, midnight to midnight.
+    - "this_week": from Monday 00:00 of the current ISO week to now.
+    - "last_week": the previous ISO week, Monday 00:00 to Monday 00:00.
     - "last_7_days": today plus the 6 calendar days before it, from local
       midnight 6 days ago to now. "last_30_days" likewise (the Sessions
       view's other filter).
     - "all": everything.
+
+    "latest_session" isn't a time window, so it raises ValueError here;
+    run() and activity_breakdown() handle it in _load_sessions().
 
     Days are calendar days in `tz` (default: the system's local timezone),
     so a day that gains or loses an hour for daylight saving is still one
@@ -119,17 +139,32 @@ def resolve_range(
     day. `now_ms` defaults to the current time; tests pass both."""
     if range_name == "all":
         return _ALL_RANGE
-    days = _CALENDAR_DAY_RANGES.get(range_name)
-    if days is None:
+    if range_name == LATEST_SESSION:
+        raise ValueError(
+            "latest_session isn't a time window: it's the most recent finished "
+            "session, so it has no start and end to resolve."
+        )
+    if range_name not in RANGE_NAMES:
         raise ValueError(
             f"Unknown range {range_name!r}. Choose one of: {', '.join(RANGE_NAMES)}."
         )
     now_ms = _now_ms() if now_ms is None else now_ms
     tz = local_timezone() if tz is None else tz
     today = datetime.datetime.fromtimestamp(now_ms // 1000, tz).date()
-    first_day = today - datetime.timedelta(days=days - 1)
-    midnight = datetime.datetime.combine(first_day, datetime.time(0), tzinfo=tz)
-    return round(midnight.timestamp() * 1000), now_ms
+    monday = today - datetime.timedelta(days=today.weekday())
+    if range_name == "yesterday":
+        return _midnight_ms(today - datetime.timedelta(days=1), tz), _midnight_ms(today, tz)
+    if range_name == "this_week":
+        return _midnight_ms(monday, tz), now_ms
+    if range_name == "last_week":
+        return _midnight_ms(monday - datetime.timedelta(days=7), tz), _midnight_ms(monday, tz)
+    days = _CALENDAR_DAY_RANGES[range_name]
+    return _midnight_ms(today - datetime.timedelta(days=days - 1), tz), now_ms
+
+
+def _midnight_ms(day: datetime.date, tz: datetime.tzinfo) -> int:
+    """Epoch ms of 00:00 on `day` in `tz`."""
+    return round(datetime.datetime.combine(day, datetime.time(0), tzinfo=tz).timestamp() * 1000)
 
 
 # --- the request format (the contract the AI bar will fill in) -----------
@@ -183,6 +218,11 @@ class MetricResult:
     unit: str
     n_sessions: int
     empty: bool
+    # True if the answer used activity windows (an activity filter, or
+    # time_in_activity) and any session that fed it has predictions from
+    # the dummy classifier -- the same rule as ActivityBreakdown.simulated
+    # (both use _any_simulated()).
+    simulated: bool = False
 
 
 @dataclass(frozen=True)
@@ -214,6 +254,13 @@ class _Session:
         return self.started_at, self.end_ms
 
 
+def _any_simulated(sessions: Iterable[_Session]) -> bool:
+    """True if any of `sessions` has predictions from the dummy classifier
+    (model_version "demo-dummy"). Pass only the sessions that fed an
+    answer. Shared by run() and activity_breakdown()."""
+    return any(DUMMY_MODEL_VERSION in s.model_versions for s in sessions)
+
+
 def _load_sessions(
     conn: sqlite3.Connection,
     *,
@@ -227,7 +274,9 @@ def _load_sessions(
     """The sessions a request covers, oldest first, with their HR samples
     and predictions (each only if asked for). By range: finished sessions only. By
     id: that session, finished or not (a live one runs up to now, as in
-    stats.compute_session_stats()); ValueError if it doesn't exist."""
+    stats.compute_session_stats()); ValueError if it doesn't exist.
+    "latest_session": the one finished session that started last (ties:
+    the higher id), or none if there isn't one."""
     now_ms = _now_ms() if now_ms is None else now_ms
     if session_id is not None:
         rows = conn.execute(
@@ -235,6 +284,11 @@ def _load_sessions(
         ).fetchall()
         if not rows:
             raise ValueError(f"no session with id {session_id}")
+    elif range_name == LATEST_SESSION:
+        rows = conn.execute(
+            "SELECT id, started_at, ended_at, label FROM sessions "
+            "WHERE ended_at IS NOT NULL ORDER BY started_at DESC, id DESC LIMIT 1"
+        ).fetchall()
     else:
         start_ms, end_ms = resolve_range(range_name, now_ms, tz)
         rows = conn.execute(
@@ -307,8 +361,16 @@ def run(
       if None), worked out per session and then added up. Empty if no
       covered session has any activity data; a real 0 if they do but none
       of it was `activity`.
+
+    `n_sessions` counts the sessions that contributed to the number: with
+    an activity, only those with HR samples inside its windows (avg_hr,
+    peak_hr) or with time in it (time_in_activity -- so a real 0 has 0
+    sessions); without one, every covered session with the data needed.
     - session_count / total_time: the covered sessions, and their combined
-      length. Empty if there are none."""
+      length. Empty if there are none.
+
+    `simulated` is set only when activity windows were used (an activity
+    filter, or time_in_activity), from the sessions that fed the answer."""
     request.validate()
     metric, activity = request.metric, request.activity
     unit = METRIC_UNITS[metric]
@@ -334,28 +396,36 @@ def run(
         return MetricResult(value, unit, len(sessions), empty=False)
 
     if metric in ("avg_hr", "peak_hr"):
-        per_session = [samples for samples in (_hr_samples(s, activity) for s in sessions) if samples]
-        pooled = [sample for samples in per_session for sample in samples]
+        fed = [(s, samples) for s in sessions if (samples := _hr_samples(s, activity))]
+        pooled = [sample for _, samples in fed for sample in samples]
         if metric == "avg_hr":
             value = stats.average_hr(pooled)
         else:
             peak = stats.peak_hr(pooled)
             value = peak[0] if peak is not None else None
-        return MetricResult(value, unit, len(per_session), empty=value is None)
+        return MetricResult(
+            value, unit, len(fed), empty=value is None,
+            simulated=_any_simulated(s for s, _ in fed),
+        )
 
     # time_in_activity
-    per_session = [
-        seconds
-        for seconds in (
-            stats.time_per_activity(s.predictions, s.started_at, s.end_ms) for s in sessions
-        )
-        if seconds
+    fed = [
+        (s, seconds)
+        for s in sessions
+        if (seconds := stats.time_per_activity(s.predictions, s.started_at, s.end_ms))
     ]
-    if not per_session:
+    if not fed:
         return MetricResult(None, unit, 0, empty=True)
-    combined = stats.combine_activity_seconds(per_session)
-    value = sum(combined.values()) if activity is None else combined.get(activity, 0.0)
-    return MetricResult(value, unit, len(per_session), empty=False)
+    combined = stats.combine_activity_seconds(seconds for _, seconds in fed)
+    if activity is None:
+        value, n_sessions = sum(combined.values()), len(fed)
+    else:
+        # Only sessions with some time in this activity contributed.
+        value = combined.get(activity, 0.0)
+        n_sessions = sum(1 for _, seconds in fed if seconds.get(activity, 0.0) > 0)
+    return MetricResult(
+        value, unit, n_sessions, empty=False, simulated=_any_simulated(s for s, _ in fed)
+    )
 
 
 def activity_breakdown(
@@ -384,7 +454,7 @@ def activity_breakdown(
     combined = stats.combine_activity_seconds(seconds for _, seconds in fed)
     return ActivityBreakdown(
         items=tuple(stats.ordered_activities(combined)),
-        simulated=any(DUMMY_MODEL_VERSION in s.model_versions for s, _ in fed),
+        simulated=_any_simulated(s for s, _ in fed),
         n_sessions=len(fed),
     )
 

@@ -55,7 +55,7 @@ NO_RECENT_TEXT = "No sessions recorded yet"
 # Shown under the breakdown when any of its time comes from the dummy
 # classifier (model_version "demo-dummy": the Live Monitor, the dev-panel
 # seed and the demo script all write those until milestone 6).
-SIMULATED_CAPTION = "Activity times are from simulated predictions."
+SIMULATED_CAPTION = queries.SIMULATED_CAPTION
 UNLABELED_ICON = "?"
 
 

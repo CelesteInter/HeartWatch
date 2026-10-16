@@ -55,6 +55,16 @@ class LlmWorker(QObject):
     # when Ollama is unavailable, the model isn't pulled, or the reply
     # failed validation. The rejected text itself is never sent.
     summary_failed = Signal(int, str)
+    # (request_id, raw reply) -- the AI bar's question parser
+    # (request_parse()). The raw text is not checked here: ask/llm_parser.py
+    # parses and validates it, and nothing from it is shown as-is.
+    parse_finished = Signal(int, str)
+    # (request_id, PARSE_UNAVAILABLE or PARSE_ERROR) -- Ollama couldn't
+    # answer, or something else went wrong.
+    parse_failed = Signal(int, str)
+
+    PARSE_UNAVAILABLE = "unavailable"
+    PARSE_ERROR = "error"
 
     def __init__(self, parent: QObject | None = None):
         super().__init__(parent)
@@ -109,6 +119,22 @@ class LlmWorker(QObject):
         self._submit(self._do_session_summary(request_id, stats))
         return request_id
 
+    def request_parse(self, messages: list[dict], format: dict) -> int:
+        """Sends `messages` with the JSON schema `format` (structured
+        output) and llm.client.ASK_OPTIONS, and returns this request's id
+        straight away. Later emits parse_finished(request_id, raw reply) or
+        parse_failed(request_id, PARSE_UNAVAILABLE / PARSE_ERROR). Like
+        summaries, callers ignore any id they aren't waiting on (see
+        ui/pending_request.py); nothing here times out or cancels."""
+        request_id = next(self._request_ids)
+        self._submit(self._do_parse(request_id, messages, format))
+        return request_id
+
+    def preload(self) -> None:
+        """Loads the model in the background (llm.client.preload()) so the
+        next request is warm. Failures only update the AI pill."""
+        self._submit(self._do_preload())
+
     def _submit(self, coro) -> None:
         if self._loop is None:
             raise RuntimeError("LlmWorker.start() must be called before use")
@@ -153,3 +179,36 @@ class LlmWorker(QObject):
             self.summary_failed.emit(
                 request_id, "the generated text didn't pass the app's wording checks"
             )
+
+    async def _do_parse(self, request_id: int, messages: list[dict], format: dict) -> None:
+        try:
+            raw_text = await llm_client.chat(
+                messages, options=llm_client.ASK_OPTIONS, format=format
+            )
+        except ollama.ResponseError as exc:
+            if exc.status_code == 404:
+                self.health_checked.emit(llm_client.model_missing_status())
+                self.parse_failed.emit(request_id, self.PARSE_UNAVAILABLE)
+            else:
+                self.parse_failed.emit(request_id, self.PARSE_ERROR)
+            return
+        except llm_client.CONNECTION_ERRORS as exc:
+            self.health_checked.emit(llm_client.unreachable_status(exc))
+            self.parse_failed.emit(request_id, self.PARSE_UNAVAILABLE)
+            return
+        except Exception:  # noqa: BLE001 - worker thread must never crash the app
+            self.parse_failed.emit(request_id, self.PARSE_ERROR)
+            return
+        self.health_checked.emit(llm_client.ready_status())
+        self.parse_finished.emit(request_id, raw_text)
+
+    async def _do_preload(self) -> None:
+        try:
+            await llm_client.preload()
+        except ollama.ResponseError as exc:
+            if exc.status_code == 404:
+                self.health_checked.emit(llm_client.model_missing_status())
+        except llm_client.CONNECTION_ERRORS as exc:
+            self.health_checked.emit(llm_client.unreachable_status(exc))
+        except Exception:  # noqa: BLE001 - worker thread must never crash the app
+            pass

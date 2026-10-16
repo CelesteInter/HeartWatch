@@ -10,6 +10,8 @@ a plain dict instead of touching os.environ.
   data/db.py's resolve_db_path(); see scripts/demo_session.py).
 - HEARTWATCH_SUMMARY_MODE -- how the session detail dialog writes its
   summary; see summary_mode() below.
+- HEARTWATCH_ASK_MODE -- how the "Ask about your data" bar understands a
+  question; see ask_mode() below.
 
 Nothing here imports the rest of the app, so scripts can read these names
 before anything else (in particular data/db.py, which fixes the database
@@ -66,3 +68,41 @@ def summary_mode(environ: Mapping[str, str] = os.environ) -> str:
             SUMMARY_MODE_PLAIN,
         )
     return SUMMARY_MODE_PLAIN
+
+
+ASK_MODE_ENV_VAR = "HEARTWATCH_ASK_MODE"
+# "hybrid": the keyword parser (ask/rules.py) first; only a question it
+# isn't sure about goes to the local model. The default.
+ASK_MODE_HYBRID = "hybrid"
+# "rules": the keyword parser only; anything it isn't sure about gets the
+# "didn't understand" reply. Never contacts Ollama.
+ASK_MODE_RULES = "rules"
+# "llm": every question goes to the local model (for the evaluation's
+# comparison; scripts/eval_ask.py).
+ASK_MODE_LLM = "llm"
+ASK_MODES = (ASK_MODE_HYBRID, ASK_MODE_RULES, ASK_MODE_LLM)
+
+_warned_ask_modes: set[str] = set()
+
+
+def ask_mode(environ: Mapping[str, str] = os.environ) -> str:
+    """"hybrid", "rules" or "llm", from HEARTWATCH_ASK_MODE (case-
+    insensitive). Unset or empty gives "hybrid". Anything else also gives
+    "hybrid", with one warning on the "heartwatch.llm" logger. Read each
+    time a question is asked, like summary_mode()."""
+    raw = environ.get(ASK_MODE_ENV_VAR) or ""
+    mode = raw.strip().lower()
+    if not mode:
+        return ASK_MODE_HYBRID
+    if mode in ASK_MODES:
+        return mode
+    if raw not in _warned_ask_modes:
+        _warned_ask_modes.add(raw)
+        logger.warning(
+            "%s=%r isn't one of %s; using %r",
+            ASK_MODE_ENV_VAR,
+            raw,
+            ", ".join(ASK_MODES),
+            ASK_MODE_HYBRID,
+        )
+    return ASK_MODE_HYBRID

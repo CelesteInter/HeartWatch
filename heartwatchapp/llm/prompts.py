@@ -29,13 +29,19 @@ here exist to make that checking fair:
 
 from __future__ import annotations
 
+import json
+
+from ..ask import vocab as _ask_vocab
+
 # Lives in data/stats.py so the plain-text fallback formats durations the
 # same way; re-exported here because the prompt is where it matters most.
 from ..data.stats import format_duration_words, ordered_activities
 
 __all__ = [
+    "ASK_SYSTEM_PROMPT",
     "SYSTEM_PROMPT",
     "activity_fact_lines",
+    "build_ask_messages",
     "build_session_summary_messages",
     "format_duration_words",
     "render_session_summary_prompt",
@@ -132,4 +138,84 @@ def build_session_summary_messages(stats: dict) -> list[dict]:
     return [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": render_session_summary_prompt(stats)},
+    ]
+
+
+# -- the AI bar's question parser ---------------------------------------------
+#
+# A different job from the summaries above: the model reads one question
+# and fills in a JSON form (ask/llm_parser.py passes the schema as Ollama's
+# `format=`). It never answers, and nothing it writes is shown -- Python
+# checks the form and writes the reply (ask/answers.py). The field lists
+# below are built from ask/vocab.py, the same source as the schema, so the
+# prompt can't describe a value the schema doesn't allow.
+
+ASK_METRIC_DESCRIPTIONS = {
+    "avg_hr": "average heart rate",
+    "peak_hr": "highest (peak) heart rate",
+    "time_in_activity": "how long the user spent doing one activity",
+    "session_count": "how many sessions were recorded",
+    "total_time": "total recorded time",
+}
+ASK_RANGE_DESCRIPTIONS = {
+    "today": "today",
+    "yesterday": "yesterday",
+    "this_week": "this week: since Monday of the current week",
+    "last_week": "last week: the previous Monday-to-Sunday week",
+    "last_7_days": "the last 7 days, counting today",
+    "last_30_days": "the last 30 days, counting today",
+    "all": "all sessions ever recorded",
+    "latest_session": "the user's most recent session only",
+}
+# (question, metric, activity, range) -- includes the this_week /
+# last_week / last_7_days contrast the model got wrong in the Phase A
+# smoke test ("this week" came back as last_week).
+ASK_EXAMPLES = (
+    ("what was my average heart rate this week", "avg_hr", None, "this_week"),
+    ("peak heart rate today", "peak_hr", None, "today"),
+    ("average heart rate last week", "avg_hr", None, "last_week"),
+    ("average heart rate over the past 7 days", "avg_hr", None, "last_7_days"),
+    ("how long did I walk yesterday", "time_in_activity", "Walking", "yesterday"),
+    ("highest heart rate while running in my last session", "peak_hr", "Running", "latest_session"),
+    ("how many sessions have I recorded", "session_count", None, None),
+    ("number of sessions this week", "session_count", None, "this_week"),
+    ("how much time have I recorded this month so far", None, None, None),
+    ("tell me a joke", None, None, None),
+)
+
+
+def _ask_example_line(question: str, metric, activity, range_name) -> str:
+    form = {
+        "intent": "query" if metric else "unsupported",
+        "metric": metric,
+        "activity": activity,
+        "range": range_name,
+    }
+    return f"{question} -> {json.dumps(form)}"
+
+
+ASK_SYSTEM_PROMPT = (
+    "You turn one question about the user's own recorded sessions into a JSON form. "
+    "You never answer the question yourself.\n\n"
+    "Fields:\n"
+    '- intent: "query" if the question asks for one of the metrics below, otherwise '
+    '"unsupported".\n'
+    "- metric (null if intent is unsupported):\n"
+    + "".join(f"  {m}: {ASK_METRIC_DESCRIPTIONS[m]}\n" for m in _ask_vocab.METRICS)
+    + f"- activity: one of {', '.join(_ask_vocab.ACTIVITIES)}, only if the question itself "
+    "names that activity (e.g. walk, run, jog, sit, stand). Most questions name none: then "
+    "activity is null. Never guess one.\n"
+    "- range: the time period the question names, or null if it names none:\n"
+    + "".join(f"  {r}: {ASK_RANGE_DESCRIPTIONS[r]}\n" for r in _ask_vocab.RANGES)
+    + "\nExamples:\n"
+    + "".join(_ask_example_line(*example) + "\n" for example in ASK_EXAMPLES)
+)
+
+
+def build_ask_messages(question: str) -> list[dict]:
+    """The exact chat messages for one question: ASK_SYSTEM_PROMPT, then
+    the question as typed. Shared by the app and scripts/eval_ask.py."""
+    return [
+        {"role": "system", "content": ASK_SYSTEM_PROMPT},
+        {"role": "user", "content": question},
     ]
