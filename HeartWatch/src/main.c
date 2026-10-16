@@ -9,8 +9,9 @@
 #include "esp_timer.h"
 
 // Custom headers
-#include "max30102.h"
+#include "max30101.h"
 #include "sh1107.h"
+#include "hud.h"
 
 // Macros for GPIO
 #define USER_LED GPIO_NUM_21
@@ -64,15 +65,15 @@ void app_main(void)
     };
     ESP_ERROR_CHECK(sh1107_init(&display_config));
     ESP_ERROR_CHECK(sh1107_clear());
-    ESP_ERROR_CHECK(sh1107_print("HeartWatch\nReady!\n"));
+    displayHUD(0);
 
-    ESP_ERROR_CHECK(sh1107_print("Test additional print\n"));
-    ESP_ERROR_CHECK(sh1107_print("Initializing...\n"));
-
-    vTaskDelay(500);
+    vTaskDelay(200);
 
     ESP_ERROR_CHECK(sh1107_clear());
 
+    vTaskDelay(100);
+
+    displayHUD(2);
     // I2C master configuration
     i2c_master_bus_config_t i2c_mst_config = {
         .clk_source = I2C_CLK_SRC_DEFAULT,
@@ -113,10 +114,10 @@ void app_main(void)
     ESP_ERROR_CHECK(result);
     ESP_LOGI(TAG, "WHO_AM_I: 0x%02X", mpu_data[0]);
 
-    // MAX30102 I2C configuration
+    // MAX30101 I2C configuration
     i2c_device_config_t i2c_heartrate_config = {
         .dev_addr_length = I2C_ADDR_BIT_LEN_7,
-        .device_address = MAX30102_ADDRESS,
+        .device_address = MAX30101_ADDRESS,
         .scl_speed_hz = 100000,
     };
     // bus handler
@@ -124,10 +125,10 @@ void app_main(void)
     // Error checking & bus setup
     ESP_ERROR_CHECK(i2c_master_bus_add_device(bus_handle, &i2c_heartrate_config, &heartrate_handle));
 
-    ESP_ERROR_CHECK(max30102_init(heartrate_handle));
-    ESP_LOGI(HEART_RATE_TAG, "MAX30102 initialized");
+    ESP_ERROR_CHECK(max30101_init(heartrate_handle));
+    ESP_LOGI(HEART_RATE_TAG, "MAX30101 initialized");
 
-    // variables to hold MAX30102 values
+    // Variables to hold MAX30101 values
     uint32_t ir_value;
     uint32_t ir_baseline = 0;
     uint32_t signal_peak = 0;
@@ -136,9 +137,9 @@ void app_main(void)
     // Main polling loop
 	while (1) {
 
-        // Read Heartrate BPM
+        // Read heart rate BPM
         for (int sample_count = 0; sample_count < 8; sample_count++) {
-            if (!max30102_read_ir(heartrate_handle, &ir_value)) {
+            if (!max30101_read_ir(heartrate_handle, &ir_value)) {
                 break;
             }
 
@@ -166,7 +167,7 @@ void app_main(void)
              * now_ms - last_beat_ms > 300 : theoretical maximum limit for BPM of 200 
              *          -> 60000 ms in a minute / 300 ms = 200 BPM
              */
-            if (ir_value > 50000 && signal > 500 && signal > previous_peak * 3 / 2 &&
+            if (ir_value > 5000 && signal > 500 && signal > previous_peak * 3 / 2 &&
                 now_ms - last_beat_ms > 300) {
                 // Ensure first detected pulse doesn't provide a data entry
                 if (last_beat_ms != 0) {
@@ -174,12 +175,12 @@ void app_main(void)
                     uint32_t bpm = 60000 / (now_ms - last_beat_ms);
                     // If the BPM is reasonable, print it to log
                     if (bpm >= 40 && bpm <= 220) {
-                        ESP_LOGE(HEART_RATE_TAG, "Heart rate: %lu BPM", (unsigned long)bpm);
+                        ESP_LOGE(HEART_RATE_TAG, "Heart rate: %3lu BPM", (unsigned long)bpm);
 
-                        // print to OLED
-                        ESP_ERROR_CHECK(sh1107_clear());
-                        char message[20];
-                        snprintf(message, sizeof(message),"Heart rate: %lu BPM", (unsigned long)bpm);
+                        ESP_ERROR_CHECK(sh1107_set_cursor(5, 7));
+                        char message[14];
+
+                        snprintf(message, sizeof(message),"  HR: %3lu BPM", (unsigned long)bpm);
                         ESP_ERROR_CHECK(sh1107_print(message));
                     }
                 }
@@ -202,6 +203,7 @@ void app_main(void)
 		// vTaskDelay(pdMS_TO_TICKS(250));
 		// gpio_set_level(USER_LED, 1);
 		// vTaskDelay(pdMS_TO_TICKS(250));
+        vTaskDelay(pdMS_TO_TICKS(10));
 	}
 }
 
