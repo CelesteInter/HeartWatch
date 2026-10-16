@@ -210,6 +210,37 @@ real recordings.
 to first token 0.04s; warm generation 0.11–0.94s; cold load 2.31s.
 Selected to fit an 8 GB development machine.
 
+## Where numbers come from
+
+Every number the app shows -- the Dashboard's cards, bars and donut, the
+Sessions table's Avg/Peak BPM, and the session summary -- is computed by
+one function in `data/stats.py`, and fetched through `data/queries.py`
+(`run()` with a `MetricRequest`, plus `activity_breakdown()` and the two
+session lists). **SQL may filter, order, join and `COUNT(*)` rows; it never
+does the arithmetic.** `tests/test_queries.py` scans `data/queries.py`,
+`data/db.py` and `ui/` and fails on `AVG(`, `SUM(`, `MAX(` or `MIN(` in SQL.
+That's what keeps the Dashboard and the summary from ever disagreeing.
+
+- **Average heart rate** is the simple mean of the measured samples: add
+  up the readings, divide by how many. Gaps (sensor dropouts) are left
+  out, never filled in. Across several sessions the samples are pooled, so
+  every sample counts once (the same answer as SQL's `AVG(bpm)`).
+- **Time per activity** comes from the prediction window rule in
+  `stats._activity_segments()` (each prediction owns the 5 s before it),
+  worked out per session and then added up, so no window crosses from one
+  session into another.
+- **Which sessions a range covers:** a session belongs to "Today", "Last 7
+  days" or "Last 30 days" if it *started* in that range, and then all of
+  its samples count; a session that runs past midnight counts on the day it
+  started. Days are local calendar days (7 days = today plus the 6 before
+  it, from local midnight), so the Dashboard and the Sessions filter mean
+  the same thing. Sessions still recording are left out of the Dashboard
+  until they end; the Sessions table lists them.
+- **Simulated predictions:** until milestone 6 every prediction comes from
+  the dummy classifier (`model_version "demo-dummy"`). When any of the
+  breakdown's time does, the Dashboard says so under it: *"Activity times
+  are from simulated predictions."*
+
 ## Development notes
 
 Things we learned the hard way while building the AI summaries. Read this
@@ -221,7 +252,6 @@ before touching `llm/` or the database.
 | Reuse the module-level `AsyncClient` across several `asyncio.run()` calls | Keep live-model work inside one `asyncio.run()`, and run Qt checks in a separate process. The client is tied to its event loop. |
 | Catch only `httpx.RequestError` for "Ollama down" | Catch `CONNECTION_ERRORS` (includes built-in `ConnectionError`) |
 | Check numbers as substrings in tests ("134" contains "4") | Compare digit tokens from `re.findall(r"\d+")` |
-| Open the real DB with SQLite `mode=ro` | Use copies via `HEARTWATCH_DB_PATH`. WAL mode still touches the `-shm`/`-wal` files. |
 | Open the real DB from scripts, even with `mode=ro` (it still changes `-shm`) | Build a fresh DB; if a copy is truly needed, copy the files at the filesystem level and open only the copy. |
 | Use pytest | It isn't installed. Use stdlib `unittest`. |
 | Update test expectations by copying new outputs | Recompute expected values by hand from the rule being tested |
@@ -287,15 +317,16 @@ heartwatchapp/
 │   ├── theme.py         design tokens + QSS (light/dark, no scattered hex)
 │   ├── widgets.py       Card, MetricCard, Badge, Divider, PlaceholderState
 │   ├── charts.py        Matplotlib DonutChart + scrolling LiveHRChart
-│   ├── dashboard.py     Section 1 — metric cards, activity breakdown, sessions
+│   ├── dashboard.py     Section 1 — metric cards, activity breakdown, sessions (all via data/queries.py)
 │   ├── live_monitor.py  Section 2 — live HR + activity badge + IMU axes
 │   ├── sessions.py      Section 3 — sessions list + SessionDetailDialog (chart, summary)
 │   ├── ml_view.py       Section 4 — stub (pipeline summary + matrix placeholder)
 │   ├── settings.py      Section 5 — stub (placeholder controls, theme toggle)
 │   └── ai_bar.py        always-visible data-query bar (layout only)
 ├── data/
-│   ├── db.py            SQLite connection + schema + query stubs
-│   └── stats.py         session-summary number crunching (no LLM code)
+│   ├── db.py            SQLite connection + schema + writes and plain row reads
+│   ├── queries.py       the one query layer: MetricRequest, run(), ranges, breakdown, session lists
+│   └── stats.py         every metric (average/peak HR, time per activity, totals) + session summaries
 ├── llm/
 │   ├── client.py        the only module that imports `ollama`
 │   ├── prompts.py       system prompt + session-summary prompt text
@@ -313,6 +344,8 @@ heartwatchapp/
     ├── test_demo_session.py   demo tooling: real-DB guard, demo facts, seeded predictions
     ├── test_demo_db_fresh.py  demo DB never touches the real DB's files (fake real DB, live WAL)
     ├── test_summary_mode.py   HEARTWATCH_SUMMARY_MODE and the dialog's two paths
+    ├── test_queries.py        query layer + metric functions, ranges, no-SQL-arithmetic guard
+    ├── test_dashboard_view.py Dashboard widget offscreen: cards match run(), caption, empty states
     └── test_eval_summaries.py eval script's pure parts (no live Ollama needed)
 ```
 

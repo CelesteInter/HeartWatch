@@ -195,16 +195,18 @@ def list_sessions(
     start_date: int | None = None,
     end_date: int | None = None,
 ) -> list[dict]:
-    """Backs the Sessions view. Each dict has: id, started_at, ended_at
-    (epoch ms; ended_at is None for a still-live session), duration_s,
-    device_id, label, sample_count (IMU rows), avg_bpm, peak_bpm (both
-    None if the session has no HR samples yet). Newest first."""
+    """Plain session rows for the developer panel's session picker and the
+    ML view's export. Each dict has: id, started_at, ended_at (epoch ms;
+    ended_at is None for a still-live session), duration_s, device_id,
+    label, sample_count (IMU rows). Newest first.
+
+    No heart-rate numbers here: the Sessions table's Avg/Peak columns come
+    from data/queries.py's list_sessions(), which computes them with
+    data/stats.py like every other number the user reads."""
     query = """
         SELECT
             s.id, s.started_at, s.ended_at, s.device_id, s.label,
-            (SELECT COUNT(*) FROM imu_samples i WHERE i.session_id = s.id) AS sample_count,
-            (SELECT AVG(bpm) FROM hr_samples h WHERE h.session_id = s.id) AS avg_bpm,
-            (SELECT MAX(bpm) FROM hr_samples h WHERE h.session_id = s.id) AS peak_bpm
+            (SELECT COUNT(*) FROM imu_samples i WHERE i.session_id = s.id) AS sample_count
         FROM sessions s
         WHERE (:label IS NULL OR s.label = :label)
           AND (:start_date IS NULL OR s.started_at >= :start_date)
@@ -235,8 +237,6 @@ def list_sessions(
                 "device_id": r["device_id"],
                 "label": r["label"],
                 "sample_count": r["sample_count"],
-                "avg_bpm": r["avg_bpm"],
-                "peak_bpm": r["peak_bpm"],
             }
         )
     return out
@@ -282,44 +282,6 @@ def get_session_timeline(session_id: int, path: str | Path = DB_PATH) -> dict:
         "hr": [(r["ts"], r["bpm"]) for r in hr_rows],
         "imu": [tuple(r) for r in imu_rows],
         "predictions": [(r["ts"], r["predicted"], r["confidence"]) for r in pred_rows],
-    }
-
-
-def get_dashboard_stats(days: int = 7) -> dict:
-    """Backs the four Dashboard metric cards and the activity breakdown.
-
-    Returns {"avg_hr": float|None, "peak_hr": int|None, "session_count": int,
-    "total_active_seconds": float, "activity_breakdown": {label: seconds}}.
-    Sessions are scoped to the window by started_at; a still-live session's
-    duration counts up to "now"."""
-    cutoff = _now_ms() - days * 86_400_000
-    with contextlib.closing(_connect()) as conn:
-        sessions = conn.execute(
-            "SELECT id, started_at, ended_at, label FROM sessions WHERE started_at >= ?",
-            (cutoff,),
-        ).fetchall()
-        hr_agg = conn.execute(
-            "SELECT AVG(bpm) AS avg_bpm, MAX(bpm) AS peak_bpm FROM hr_samples "
-            "WHERE session_id IN (SELECT id FROM sessions WHERE started_at >= ?)",
-            (cutoff,),
-        ).fetchone()
-
-    now = _now_ms()
-    breakdown: dict[str, float] = {}
-    total_active_s = 0.0
-    for r in sessions:
-        ended_at = r["ended_at"] if r["ended_at"] is not None else now
-        duration_s = max(0, ended_at - r["started_at"]) / 1000
-        total_active_s += duration_s
-        label = r["label"] or "Unknown"
-        breakdown[label] = breakdown.get(label, 0.0) + duration_s
-
-    return {
-        "avg_hr": hr_agg["avg_bpm"],
-        "peak_hr": hr_agg["peak_bpm"],
-        "session_count": len(sessions),
-        "total_active_seconds": total_active_s,
-        "activity_breakdown": breakdown,
     }
 
 
