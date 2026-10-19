@@ -106,6 +106,8 @@ void app_main(void)
     uint8_t mpu_data[MPU_DATA_LENGTH];
     uint8_t register_address;
     esp_err_t result;
+    int16_t accel_x, accel_y, accel_z;
+    int16_t gyro_x, gyro_y, gyro_z;
 
     // Read WHO_AM_I to verify that the MPU is responding at address 0x68.
     register_address = WHO_AM_I;
@@ -136,7 +138,7 @@ void app_main(void)
 
     // Main polling loop
 	while (1) {
-
+        
         // Read heart rate BPM
         for (int sample_count = 0; sample_count < 8; sample_count++) {
             if (!max30101_read_ir(heartrate_handle, &ir_value)) {
@@ -196,7 +198,20 @@ void app_main(void)
 		//                                      mpu_data, sizeof(mpu_data), -1);
 		// ESP_ERROR_CHECK(result);
 		// ESP_LOG_BUFFER_HEXDUMP(TAG, mpu_data, sizeof(mpu_data), ESP_LOG_INFO);
-        
+
+        // MPU data read
+        register_address = MPU_REG_ACCEL_XOUT_H;
+        result = i2c_master_transmit_receive(mpu_handle, &register_address, 1,
+                             mpu_data, MPU_DATA_LENGTH, -1);
+        ESP_ERROR_CHECK(result);
+        accel_x = (int16_t)(((uint16_t)mpu_data[0] << 8) | mpu_data[1]);
+        accel_y = (int16_t)(((uint16_t)mpu_data[2] << 8) | mpu_data[3]);
+        accel_z = (int16_t)(((uint16_t)mpu_data[4] << 8) | mpu_data[5]);
+        gyro_x = (int16_t)(((uint16_t)mpu_data[8] << 8) | mpu_data[9]);
+        gyro_y = (int16_t)(((uint16_t)mpu_data[10] << 8) | mpu_data[11]);
+        gyro_z = (int16_t)(((uint16_t)mpu_data[12] << 8) | mpu_data[13]);
+
+        ESP_LOGI(TAG, "AX: %d, AY: %d, AZ: %d, GX: %d, GY: %d, GZ: %d\n", accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z);
 
         // Heartbeat LED
 		// gpio_set_level(USER_LED, 0);
