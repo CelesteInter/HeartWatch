@@ -12,6 +12,8 @@ a plain dict instead of touching os.environ.
   summary; see summary_mode() below.
 - HEARTWATCH_ASK_MODE -- how the "Ask about your data" bar understands a
   question; see ask_mode() below.
+- HEARTWATCH_ASK_DEV -- the bar's developer tools (who answered, a local
+  question log); see ask_dev() below.
 
 Nothing here imports the rest of the app, so scripts can read these names
 before anything else (in particular data/db.py, which fixes the database
@@ -106,3 +108,27 @@ def ask_mode(environ: Mapping[str, str] = os.environ) -> str:
             ASK_MODE_HYBRID,
         )
     return ASK_MODE_HYBRID
+
+
+ASK_DEV_ENV_VAR = "HEARTWATCH_ASK_DEV"
+# Developer tools for the "Ask about your data" bar, off by default: an
+# "answered by" marker at the end of the understood line, and a local log
+# of questions (ask/devlog.py). Any of these turns them on; anything else
+# (or unset) leaves them off.
+ASK_DEV_ON = ("1", "true", "yes", "on")
+_warned_ask_dev: set[str] = set()
+
+
+def ask_dev(environ: Mapping[str, str] = os.environ) -> bool:
+    """True if HEARTWATCH_ASK_DEV is 1 / true / yes / on (case-insensitive).
+    Unset, empty, 0 / false / no / off give False; anything else also gives
+    False, with one warning. Read each time, like ask_mode()."""
+    raw = environ.get(ASK_DEV_ENV_VAR) or ""
+    value = raw.strip().lower()
+    if value in ASK_DEV_ON:
+        return True
+    if value and value not in ("0", "false", "no", "off") and raw not in _warned_ask_dev:
+        _warned_ask_dev.add(raw)
+        logger.warning("%s=%r isn't one of %s; leaving it off", ASK_DEV_ENV_VAR, raw,
+                       ", ".join(ASK_DEV_ON))
+    return False

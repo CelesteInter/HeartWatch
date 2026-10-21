@@ -236,6 +236,15 @@ class ActivityBreakdown:
     simulated: bool
     n_sessions: int
 
+    def percentages(self) -> tuple[int, ...]:
+        """Each item's share of the total, rounded on its own to a whole
+        percent (Python's round()), in `items` order. The Dashboard's bar
+        labels and the AI bar's breakdown reply both use this, so they
+        can't disagree. Because each share is rounded separately the total
+        can be 99 or 101."""
+        total = sum(seconds for _, seconds in self.items)
+        return tuple(round(100 * seconds / total) for _, seconds in self.items)
+
 
 # --- rows ------------------------------------------------------------------
 

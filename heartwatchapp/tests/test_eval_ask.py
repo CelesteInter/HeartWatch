@@ -91,7 +91,7 @@ class EndToEndTests(EvalCase):
         self.assertTrue(by_id["a"]["exact"])
         # Pinned now is Wed Oct 14; yesterday's session (Oct 13) walked 420 s.
         self.assertEqual(by_id["a"]["reply"],
-                         "Time spent Walking yesterday: 7 minutes (1 session).")
+                         "You walked for 7 minutes yesterday, in one session.")
         self.assertEqual(by_id["b"]["actual"]["outcome"], "medical")
         self.assertEqual(by_id["c"]["actual"]["outcome"], "unsupported")
         self.assertTrue(by_id["d"]["false_accept"])
@@ -132,7 +132,8 @@ class ScoringTests(unittest.TestCase):
         # Not answering isn't a false accept, just not a match.
         self.assertEqual(eval_ask.score(expected, refused),
                          {"exact": False, "false_accept": False,
-                          "fields": {"metric": False, "activity": False, "range": False}})
+                          "fields": {"metric": False, "activity": False, "range": False},
+                          "corrections_ok": None})
         # Answering a question that should have been refused is.
         medical = {"outcome": "medical"}
         self.assertTrue(eval_ask.score(medical, right)["false_accept"])
@@ -175,3 +176,48 @@ class ScoringTests(unittest.TestCase):
         texts = {q["question"].lower().rstrip("?") for q in questions}
         self.assertIn("is my heart rate healthy", texts)
         self.assertIn("is that higher than usual", texts)
+
+
+class V11ScoringTests(unittest.TestCase):
+    """Handoff 9a, section 4: intents, clarifications, not-built replies
+    and typo corrections are scored; v1's questions are scored as before."""
+
+    def test_the_v11_file_has_the_planned_mix(self) -> None:
+        questions = eval_ask.load_questions(eval_ask.APP_DIR / "eval" / "ask_questions_dev_v11.jsonl")
+        counts: dict[str, int] = {}
+        for q in questions:
+            counts[q["category"]] = counts.get(q["category"], 0) + 1
+        self.assertEqual(counts, {"typo_supported": 8, "typo_unclear": 2, "medical_typo": 3,
+                                  "session_summary": 4, "activity_breakdown": 4,
+                                  "ambiguous_activity": 2, "not_built": 3})
+
+    def test_new_outcomes(self) -> None:
+        none = {"metric": None, "activity": None, "corrections": []}
+        summary = {"outcome": "session_summary", "range": "latest_session"}
+        self.assertTrue(eval_ask.score(summary, {**none, **summary})["exact"])
+        # A breakdown for the wrong range is answered, so it's a false accept.
+        wrong = eval_ask.score({"outcome": "activity_breakdown", "range": "today"},
+                               {**none, "outcome": "activity_breakdown", "range": "this_week"})
+        self.assertEqual((wrong["exact"], wrong["false_accept"]), (False, True))
+        clarify = {"outcome": "clarify", "options": ["Walking", "Standing"]}
+        self.assertTrue(eval_ask.score(clarify, {**none, "outcome": "clarify", "range": None,
+                                                 "options": ["Standing", "Walking"]})["exact"])
+        # Answering instead of asking is a false accept.
+        answered = {**none, "outcome": "query", "metric": "time_in_activity",
+                    "activity": "Walking", "range": "today"}
+        self.assertTrue(eval_ask.score(clarify, answered)["false_accept"])
+        self.assertTrue(eval_ask.score({"outcome": "not_built", "kind": "follow_up"},
+                                       {**none, "outcome": "not_built", "range": None,
+                                        "kind": "follow_up"})["exact"])
+
+    def test_corrections_are_scored_only_when_listed(self) -> None:
+        expected = {"outcome": "query", "metric": "avg_hr", "activity": None, "range": "today"}
+        actual = {**expected, "corrections": [["avrage", "average"]]}
+        # Not listed (every v1 question): not scored.
+        self.assertEqual(eval_ask.score(expected, actual)["corrections_ok"], None)
+        self.assertTrue(eval_ask.score(expected, actual)["exact"])
+        listed = {**expected, "corrections": [["avrage", "average"]]}
+        self.assertTrue(eval_ask.score(listed, actual)["corrections_ok"])
+        # A wrong correction that leads to a number is a false accept.
+        wrong = eval_ask.score(listed, {**actual, "corrections": [["avrage", "range"]]})
+        self.assertEqual((wrong["corrections_ok"], wrong["false_accept"]), (False, True))

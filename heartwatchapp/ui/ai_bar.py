@@ -6,8 +6,12 @@ the GUI thread (no network, no model). Others go to the local model through
 LlmWorker.request_parse() while the bar shows "Thinking…"; a
 PendingRequest (ui/pending_request.py) gives that 10 s and makes sure a
 newer question always replaces an older one's answer. Every word shown --
-the reply, the "what I understood" line and the simulated-data caption --
-is written by ask/answers.py, never by the model.
+the reply, the "what I understood" line, the simulated-data caption and
+the suggestion buttons -- is written by ask/answers.py and ask/suggest.py,
+never by the model. Clicking a suggestion asks it exactly as if typed, so
+a click while "Thinking…" replaces the pending question just like typing.
+With HEARTWATCH_ASK_DEV on, the understood line also says who answered and
+each question is logged locally (ask/devlog.py).
 
 Focusing the input preloads the model (at most once per Ollama keep-alive
 period) so the first AI answer is quicker.
@@ -31,7 +35,7 @@ from PySide6.QtWidgets import (
 )
 
 from .. import config
-from ..ask import answers, pipeline
+from ..ask import answers, devlog, pipeline
 from ..llm import client as llm_client
 from ..llm.worker import LlmWorker
 from .pending_request import PendingRequest
@@ -88,6 +92,9 @@ class AiBar(QWidget):
         self._llm_worker = llm_worker
         # None: the app's database. Tests point this at a fixture.
         self._db_path = db_path
+        # None: ask/devlog.py's LOG_PATH (HEARTWATCH_ASK_DEV only). Tests
+        # point this at a temporary file.
+        self._dev_log_path: Path | None = None
         # Last known AI status: None until the first health check answers.
         self._ai_ready: bool | None = None
         self._last_preload: float | None = None
@@ -123,6 +130,12 @@ class AiBar(QWidget):
         self.caption_text.setObjectName("Muted")
         for label in (self.result_text, self.understood_text, self.caption_text):
             texts.addWidget(label)
+        # Up to three clickable questions (suggestions, or the choices of
+        # "Did you mean ...?"); clicking one asks it exactly as if typed.
+        self.suggestion_row = QHBoxLayout()
+        self.suggestion_row.setSpacing(6)
+        self.suggestion_buttons: list[QPushButton] = []
+        texts.addLayout(self.suggestion_row)
         dismiss = QPushButton("✕")
         dismiss.setObjectName("GhostButton")
         dismiss.setFixedSize(24, 24)
@@ -163,10 +176,10 @@ class AiBar(QWidget):
 
         step = pipeline.begin(text, conn_or_path=self._db_path)
         if isinstance(step, pipeline.Answer):
-            self.show_answer(step)
+            self.show_answer(step, text)
             return
         if self._llm_worker is None or self._ai_ready is False:
-            self.show_answer(self._finish(step, failure=pipeline.FAILURE_UNAVAILABLE))
+            self.show_answer(self._finish(step, failure=pipeline.FAILURE_UNAVAILABLE), text)
             return
         self._pending_question = step
         self.show_result(answers.THINKING_TEXT)
@@ -182,10 +195,17 @@ class AiBar(QWidget):
         step, self._pending_question = self._pending_question, None
         return step
 
+    def submit_text(self, question: str) -> None:
+        """Asks `question` exactly as if it had been typed (a suggestion or
+        "Did you mean ...?" button). A question still waiting on the model
+        is replaced, as for a typed one."""
+        self.input.setText(question)
+        self._submit()
+
     def _on_parse_finished(self, request_id: int, raw: str) -> None:
         step = self._take_pending(request_id)
         if step is not None:
-            self.show_answer(self._finish(step, raw=raw))
+            self.show_answer(self._finish(step, raw=raw), step.question)
 
     def _on_parse_failed(self, request_id: int, reason: str) -> None:
         step = self._take_pending(request_id)
@@ -195,12 +215,12 @@ class AiBar(QWidget):
             pipeline.FAILURE_UNAVAILABLE if reason == LlmWorker.PARSE_UNAVAILABLE
             else pipeline.FAILURE_ERROR
         )
-        self.show_answer(self._finish(step, failure=failure))
+        self.show_answer(self._finish(step, failure=failure), step.question)
 
     def _on_timeout(self, request_id: int) -> None:
         step, self._pending_question = self._pending_question, None
         if step is not None:
-            self.show_answer(self._finish(step, failure=pipeline.FAILURE_TIMEOUT))
+            self.show_answer(self._finish(step, failure=pipeline.FAILURE_TIMEOUT), step.question)
 
     def _on_health_checked(self, status) -> None:
         self._ai_ready = status.ready
@@ -224,15 +244,38 @@ class AiBar(QWidget):
         self._last_preload = now
         self._llm_worker.preload()
 
-    def show_answer(self, answer: pipeline.Answer) -> None:
-        self.show_result(answer.text, answer.understood, answer.caption)
+    def show_answer(self, answer: pipeline.Answer, question: str | None = None) -> None:
+        """Shows `answer`. With HEARTWATCH_ASK_DEV on, the understood line
+        ends with who answered and `question` is added to the local log."""
+        understood = answer.understood
+        if config.ask_dev():
+            understood = devlog.with_marker(understood, answer)
+            if question is not None:
+                devlog.append(question, answer, self._dev_log_path)
+        self.show_result(answer.text, understood, answer.caption, answer.suggestions)
 
     def show_result(
-        self, text: str, understood: str | None = None, caption: str | None = None
+        self, text: str, understood: str | None = None, caption: str | None = None,
+        suggestions: tuple = (),
     ) -> None:
         self.result_text.setText(text)
         self.understood_text.setText(understood or "")
         self.understood_text.setHidden(understood is None)
         self.caption_text.setText(caption or "")
         self.caption_text.setHidden(caption is None)
+        self._set_suggestions(suggestions)
         self.result.setHidden(False)
+
+    def _set_suggestions(self, suggestions: tuple) -> None:
+        for button in self.suggestion_buttons:
+            self.suggestion_row.removeWidget(button)
+            button.deleteLater()
+        self.suggestion_buttons = []
+        # ask/suggest.py keeps suggestions to three; a clarification shows
+        # every choice ("Which activity?" has four).
+        for option in suggestions:
+            button = QPushButton(option.label)
+            button.setObjectName("GhostButton")
+            button.clicked.connect(lambda _=False, q=option.question: self.submit_text(q))
+            self.suggestion_row.addWidget(button)
+            self.suggestion_buttons.append(button)

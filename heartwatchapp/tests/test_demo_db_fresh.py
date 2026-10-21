@@ -330,3 +330,62 @@ class EvalGuardTests(FakeRealDbCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HistoryTests(FakeRealDbCase):
+    """Handoff 9a, 3.10 (K): --history-days adds earlier sessions from its
+    own random generator; off, nothing changes."""
+
+    def sessions(self, path: Path) -> list[tuple[int, int, int | None]]:
+        with contextlib.closing(sqlite3.connect(str(path))) as conn:
+            return conn.execute(
+                "SELECT id, started_at, ended_at FROM sessions ORDER BY id").fetchall()
+
+    def test_off_changes_nothing(self) -> None:
+        path, session_id = demo_db.build_demo_db(self.out_dir / "d.db", data_seed=0,
+                                                 history_days=0, real=self.real)
+        self.assertEqual(fingerprint(path, session_id),
+                         (DEMO_SEED0_HR_ROWS, DEMO_SEED0_PREDICTION_ROWS, DEMO_SEED0_FINGERPRINT))
+        self.assertEqual(len(self.sessions(path)), 1)
+
+    def test_on_keeps_the_demo_session_and_adds_one_per_earlier_day(self) -> None:
+        path, session_id = demo_db.build_demo_db(self.out_dir / "d.db", data_seed=0,
+                                                 history_days=7, real=self.real)
+        # Same id, same content: the history uses its own generator.
+        self.assertEqual(session_id, 1)
+        self.assertEqual(fingerprint(path, session_id),
+                         (DEMO_SEED0_HR_ROWS, DEMO_SEED0_PREDICTION_ROWS, DEMO_SEED0_FINGERPRINT))
+        rows = self.sessions(path)
+        self.assertEqual(len(rows), 8)
+        self.assertTrue(all(ended is not None for _, _, ended in rows))
+        # Every history session started before the demo session, on a
+        # different day each, so the demo session stays the latest.
+        demo_start = rows[0][1]
+        days = {(demo_start - start) // 86_400_000 for _, start, _ in rows[1:]}
+        self.assertTrue(all(start < demo_start for _, start, _ in rows[1:]))
+        self.assertEqual(len({start for _, start, _ in rows[1:]}), 7)
+        self.assertLessEqual(max(days), 7)
+
+    def test_the_same_seed_gives_the_same_history(self) -> None:
+        a, _ = demo_db.build_demo_db(self.out_dir / "a.db", data_seed=0, history_days=3,
+                                     real=self.real)
+        b, _ = demo_db.build_demo_db(self.out_dir / "b.db", data_seed=0, history_days=3,
+                                     real=self.real)
+        for sid in (2, 3, 4):
+            self.assertEqual(fingerprint(a, sid), fingerprint(b, sid))
+
+    def test_the_pinned_start_changes_no_content(self) -> None:
+        path, session_id = demo_db.build_demo_db(self.out_dir / "d.db", data_seed=0,
+                                                 started_at=1_760_000_000_000, real=self.real)
+        self.assertEqual(fingerprint(path, session_id),
+                         (DEMO_SEED0_HR_ROWS, DEMO_SEED0_PREDICTION_ROWS, DEMO_SEED0_FINGERPRINT))
+        self.assertEqual(self.sessions(path)[0][1], 1_760_000_000_000)
+
+    def test_command_line_option(self) -> None:
+        code, out, err = self.run_main("--data-seed", "0", "--history-days", "3")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.session_count(self.out_dir / "demo.db"), 4)
+        self.assertIn("3 days before today", out)
+        with self.assertRaises(SystemExit) as exit_, contextlib.redirect_stderr(io.StringIO()):
+            self.run_main("--history-days", "-1", "--overwrite")
+        self.assertEqual(exit_.exception.code, 2)

@@ -85,7 +85,17 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="fix the demo session's random heart-rate values (default: random)",
     )
+    parser.add_argument(
+        "--history-days",
+        type=int,
+        default=0,
+        metavar="N",
+        help="also add one finished session on each of the N days before today, so "
+        "questions about yesterday or last week have data (default: 0, none)",
+    )
     args = parser.parse_args(argv)
+    if args.history_days < 0:
+        parser.error("--history-days can't be negative")
 
     # Work out the real database's path BEFORE pointing HEARTWATCH_DB_PATH
     # at the demo file below. Only the path -- the file isn't opened.
@@ -124,7 +134,8 @@ def main(argv: list[str] | None = None) -> int:
         print(FROM_REAL_WARNING, file=sys.stderr, flush=True)
     try:
         target, session_id = build_demo_db(
-            target, from_real=args.from_real, data_seed=args.data_seed, real=real
+            target, from_real=args.from_real, data_seed=args.data_seed, real=real,
+            history_days=args.history_days,
         )
     except RealDatabaseError as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -133,6 +144,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     print(f"\n>>> Demo session #{session_id} added to {target}")
+    if args.history_days:
+        print(f">>> Plus one earlier session on each of the {args.history_days} days before today.")
     print(">>> Open Sessions and double-click it to see its summary.\n", flush=True)
 
     if args.no_launch:

@@ -3,7 +3,8 @@
 Plain-language overview: questions the keyword parser isn't sure about are
 sent to gemma3:1b with a JSON schema (Ollama's structured output, the
 `format=` option), so the reply can only be a form with four fields --
-intent, metric, activity, range -- each limited to the values in
+intent (a metric query, the session summary, the activity breakdown, or
+unsupported), metric, activity, range -- each limited to the values in
 ask/vocab.py. This module builds that request and checks the reply; it
 never talks to Ollama itself. The app sends the request through
 llm/worker.py's LlmWorker.request_parse() (off the GUI thread, with a
@@ -20,10 +21,17 @@ import json
 from ..data.queries import MetricRequest
 from ..llm import prompts
 from . import vocab
-from .parse_result import ACCEPTED, INVALID, UNSUPPORTED, ParseResult
+from .parse_result import (
+    ACCEPTED,
+    INTENT_BREAKDOWN,
+    INTENT_SUMMARY,
+    INVALID,
+    UNSUPPORTED,
+    ParseResult,
+)
 
 FIELDS = ("intent", "metric", "activity", "range")
-INTENTS = ("query", "unsupported")
+INTENTS = ("query", INTENT_SUMMARY, INTENT_BREAKDOWN, "unsupported")
 
 
 class LlmUnavailable(Exception):
@@ -79,6 +87,19 @@ def parse_reply(raw: str) -> ParseResult:
             return _invalid(f"{field} {form[field]!r} isn't an allowed value", raw)
     if form["intent"] == "unsupported":
         return ParseResult(UNSUPPORTED, None, "llm", "model said unsupported", raw_reply=raw)
+    if form["intent"] in (INTENT_SUMMARY, INTENT_BREAKDOWN):
+        # Not a number. If the model also filled in a metric, it's kept as
+        # `request`: the evidence check (ask/evidence.py) falls back to it
+        # when the question doesn't actually ask for a summary or breakdown.
+        fallback = (
+            MetricRequest(form["metric"], form["activity"], form["range"])
+            if form["metric"] is not None else None
+        )
+        return ParseResult(
+            ACCEPTED, fallback, "llm", "model filled in the form", raw_reply=raw,
+            intent=form["intent"], intent_range=form["range"],
+            range_source="llm" if form["range"] else None,
+        )
     if form["metric"] is None:
         return _invalid("intent is query but metric is null", raw)
     return ParseResult(

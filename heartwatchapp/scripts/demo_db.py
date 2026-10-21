@@ -26,6 +26,7 @@ it import it when called, and always pass the target path explicitly.
 from __future__ import annotations
 
 import contextlib
+import datetime
 import os
 import random
 import shutil
@@ -170,17 +171,66 @@ def add_demo_session(
     rng: random.Random | None = None,
     data_seed: int | None = None,
     real: str | Path | None = None,
+    started_at: int | None = None,
 ) -> int:
     """Writes the synthetic session into `path` (which must already have
     the schema -- see build_demo_db()) and returns its id. Heart-rate
     values and prediction confidences come from `rng`, or from a new
     random.Random(data_seed) if only `data_seed` is given, or from fresh
     randomness if neither is. Refuses the real database (`real`, or
-    real_db_path())."""
+    real_db_path()). `started_at` (epoch ms) pins the start; by default it
+    ends two minutes before now."""
     total_s = sum(seconds for _, seconds, _ in DEMO_PHASES)
     # Ended two minutes ago, so the default "Last 7 days" filter shows it.
-    t0 = int(time.time() * 1000) - (total_s + 120) * 1000
+    t0 = int(time.time() * 1000) - (total_s + 120) * 1000 if started_at is None else started_at
     return add_phases_session(path, t0, rng=rng, data_seed=data_seed, real=real)
+
+
+# Shapes for the optional history sessions (--history-days): (activity,
+# seconds, typical bpm) phases, picked at random per day.
+HISTORY_PHASE_SETS = (
+    [("Walking", 420, 101), ("Standing", 120, 84)],
+    [("Sitting", 600, 70), ("Walking", 240, 99)],
+    [("Running", 600, 140), ("Walking", 300, 104)],
+    [("Standing", 300, 82), ("Sitting", 300, 72), ("Walking", 180, 100)],
+    [("Walking", 900, 103)],
+)
+
+
+def history_rng(data_seed: int | None) -> random.Random:
+    """The history sessions' own generator, derived from the data seed but
+    separate from it, so turning history on never changes the demo
+    session's values. Random with no seed gives fresh values."""
+    return random.Random(f"history-{data_seed}") if data_seed is not None else random.Random()
+
+
+def add_history_sessions(
+    path: Path,
+    days: int,
+    data_seed: int | None = None,
+    real: str | Path | None = None,
+    now: datetime.datetime | None = None,
+) -> list[int]:
+    """One finished session on each of the `days` local calendar days
+    before `now` (default: the current time), at a random time between 7
+    am and 8 pm, with a random shape from HISTORY_PHASE_SETS. Returns the
+    new ids, oldest day last. Uses history_rng(data_seed)."""
+    from heartwatchapp.data.queries import local_timezone
+
+    rng = history_rng(data_seed)
+    # The local zone with its daylight-saving rules, so "7 days ago at
+    # 9:00" is 9:00 local even across a clock change.
+    now = now or datetime.datetime.now(local_timezone())
+    ids = []
+    for k in range(1, days + 1):
+        day = now.date() - datetime.timedelta(days=k)
+        start = datetime.datetime.combine(
+            day, datetime.time(rng.randint(7, 19), rng.choice((0, 15, 30, 45))), tzinfo=now.tzinfo
+        )
+        phases = rng.choice(HISTORY_PHASE_SETS)
+        ids.append(add_phases_session(path, round(start.timestamp() * 1000), phases, rng=rng,
+                                      real=real))
+    return ids
 
 
 def add_phases_session(
@@ -229,6 +279,8 @@ def build_demo_db(
     from_real: bool = False,
     data_seed: int | None = None,
     real: str | Path | None = None,
+    history_days: int = 0,
+    started_at: int | None = None,
 ) -> tuple[Path, int]:
     """Refuses the real database (RealDatabaseError), deletes any existing
     `target` and its companion files, then builds a new database there and
@@ -238,7 +290,13 @@ def build_demo_db(
     (data/db.py's init_db()), and the real database is never opened. With
     from_real=True it starts as a file-level copy of the real database
     (`real`, or real_db_path()) instead -- see copy_real_db(). If anything
-    fails part-way, nothing is left at `target`."""
+    fails part-way, nothing is left at `target`.
+
+    `history_days` > 0 also adds one finished session on each of that many
+    earlier days (add_history_sessions()), written after the demo session
+    so it keeps its id and stays the latest session. `started_at` pins the
+    demo session's start (scripts/eval_ask.py); by default it's timed from
+    the real clock. Neither changes the demo session's content."""
     from heartwatchapp.data import db
 
     real_path = Path(real) if real is not None else real_db_path()
@@ -248,7 +306,11 @@ def build_demo_db(
         if from_real:
             copy_real_db(target, real_path)
         db.init_db(target)
-        return target, add_demo_session(target, data_seed=data_seed, real=real_path)
+        session_id = add_demo_session(target, data_seed=data_seed, real=real_path,
+                                      started_at=started_at)
+        if history_days:
+            add_history_sessions(target, history_days, data_seed, real_path)
+        return target, session_id
     except BaseException:
         remove_db_files(target)
         raise

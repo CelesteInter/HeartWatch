@@ -75,7 +75,7 @@ SESSION_COUNT_BY_ACTIVITY_PHRASES = tuple(
 # ("my last session").
 SESSION_WORDS = ("session", "sessions", "recording", "recordings")
 
-_LATEST_NOUNS = ("session", "recording", "run", "walk", "jog")
+_LATEST_NOUNS = ("session", "recording", "workout", "run", "walk", "jog")
 RANGE_SYNONYMS: dict[str, tuple[str, ...]] = {
     "today": ("today", "so far today"),
     "yesterday": ("yesterday",),
@@ -129,6 +129,60 @@ UNSUPPORTED_COMMAND_PHRASES = tuple(
                   "my session", "the recording")
 )
 
+# Phrases that name more than one activity. The keyword parser asks which
+# one is meant (with a button for each) instead of guessing -- unless the
+# question also names an activity itself ("on my feet walking around").
+AMBIGUOUS_ACTIVITY_PHRASES: dict[str, tuple[str, ...]] = {
+    "on my feet": ("Walking", "Standing"),
+}
+
+# The two question types that aren't a single number (handoff 9a, 3.4).
+# A summary is of ONE session: with a single-session phrase ("my last
+# session") it's the session summary; with any other range it's the
+# activity breakdown for that range instead.
+SUMMARY_PHRASES = (
+    "tell me about", "summarize", "summarise", "summary", "recap", "overview", "how did",
+    "how was",
+)
+BREAKDOWN_PHRASES = (
+    "what did i do", "what have i done", "what i did", "breakdown", "break down",
+    "activity", "activities", "activity mix", "mix of activities", "split",
+)
+
+# Things v1.1 understands but can't do yet (handoff 9a, 3.6): each gets
+# its own honest reply instead of a number or the generic refusal.
+COMPARISON_WORDS = (
+    "compare", "compared", "comparing", "comparison", "versus", "vs", "than",
+    "difference between",
+)
+LONGEST_WORDS = ("longest",)
+# A question that starts with one of these and names no metric continues
+# an earlier one ("and walking?"); the bar has no memory of earlier
+# questions.
+FOLLOW_UP_STARTS = ("and", "what about", "how about")
+
+# Extra time phrases that count as evidence for a range when checking the
+# AI's form (ask/evidence.py), on top of RANGE_SYNONYMS. Kept tight: each
+# one names exactly that range. The keyword parser doesn't use these.
+RANGE_EVIDENCE_PHRASES: dict[str, tuple[str, ...]] = {
+    "this_week": ("current week",),
+    "last_week": ("week before this one", "week before this", "prior week"),
+    "last_7_days": ("previous 7 days", "previous seven days", "most recent 7 days",
+                    "recent 7 days"),
+    "last_30_days": ("previous 30 days", "previous thirty days", "most recent 30 days",
+                     "recent 30 days"),
+    LATEST_SESSION: tuple(
+        f"newest {noun}" for noun in _LATEST_NOUNS
+    ),
+}
+# Time phrases that name either of two ranges ("the last week": last_week
+# or last_7_days). As evidence they allow both; the keyword parser still
+# treats them as ambiguous (AMBIGUOUS_RANGE_PHRASES).
+AMBIGUOUS_RANGE_EVIDENCE: dict[str, tuple[str, ...]] = {
+    phrase: ("last_week", "last_7_days")
+    for phrase in ("the last week", "the past week", "past week", "this past week")
+}
+
 _NON_WORD = re.compile(r"[^a-z0-9']+")
 
 
@@ -154,4 +208,17 @@ def all_synonym_phrases() -> list[str]:
     phrases += list(SESSION_COUNT_BY_ACTIVITY_PHRASES)
     phrases += list(SESSION_WORDS)
     phrases += [p for words in RANGE_SYNONYMS.values() for p in words]
+    phrases += list(AMBIGUOUS_ACTIVITY_PHRASES)
+    phrases += list(SUMMARY_PHRASES) + list(BREAKDOWN_PHRASES)
+    phrases += list(COMPARISON_WORDS) + list(LONGEST_WORDS) + list(FOLLOW_UP_STARTS)
+    phrases += [p for words in RANGE_EVIDENCE_PHRASES.values() for p in words]
+    phrases += list(AMBIGUOUS_RANGE_EVIDENCE)
     return phrases
+
+
+def activity_of_word(word: str) -> str | None:
+    """The activity a single word names ("jogged" -> "Running"), or None."""
+    for activity, words in ACTIVITY_SYNONYMS.items():
+        if word in words:
+            return activity
+    return None

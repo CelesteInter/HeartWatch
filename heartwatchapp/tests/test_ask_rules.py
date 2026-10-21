@@ -140,7 +140,9 @@ class DeferTests(unittest.TestCase):
 
 class UnsupportedTests(unittest.TestCase):
     def test_no_metric_or_activity_words(self) -> None:
-        for question in ("what's the weather", "hello", "what about yesterday?"):
+        # "what about yesterday?" was here in v1; it's now a follow-up
+        # (NotBuiltTests), handoff 9a B8.
+        for question in ("what's the weather", "hello"):
             with self.subTest(question=question):
                 result = rules.parse(question)
                 self.assertEqual(result.status, "unsupported")

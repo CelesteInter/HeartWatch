@@ -242,20 +242,15 @@ class DashboardView(QWidget):
             return card
 
         # The bars and the donut both draw breakdown.items, so they can't
-        # disagree. Percentages are only for the bar labels.
-        total = sum(seconds for _, seconds in breakdown.items)
-
+        # disagree. Percentages are only for the bar labels, from the same
+        # helper the AI bar's breakdown reply uses.
         split = QHBoxLayout()
         split.setSpacing(16)
 
         bars = QVBoxLayout()
         bars.setSpacing(8)
-        for name, seconds in breakdown.items:
-            bars.addWidget(
-                ActivityBar(
-                    name, round(100 * seconds / total), self.theme.activity_color(name), self.theme
-                )
-            )
+        for (name, _seconds), pct in zip(breakdown.items, breakdown.percentages()):
+            bars.addWidget(ActivityBar(name, pct, self.theme.activity_color(name), self.theme))
         bars.addStretch(1)
         split.addLayout(bars, 1)
 

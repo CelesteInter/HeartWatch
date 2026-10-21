@@ -1,0 +1,26 @@
+{"id": "v01", "category": "typo_supported", "question": "how many minutes was i walkign yesterday", "expected": {"outcome": "query", "metric": "time_in_activity", "activity": "Walking", "range": "yesterday", "corrections": [["walkign", "walking"]]}}
+{"id": "v02", "category": "typo_supported", "question": "avrage heart rate this week", "expected": {"outcome": "query", "metric": "avg_hr", "activity": null, "range": "this_week", "corrections": [["avrage", "average"]]}}
+{"id": "v03", "category": "typo_supported", "question": "what was my peak heart rate yesterdy", "expected": {"outcome": "query", "metric": "peak_hr", "activity": null, "range": "yesterday", "corrections": [["yesterdy", "yesterday"]]}}
+{"id": "v04", "category": "typo_supported", "question": "How many sesions in the last 30 days?", "expected": {"outcome": "query", "metric": "session_count", "activity": null, "range": "last_30_days", "corrections": [["sesions", "sessions"]]}}
+{"id": "v05", "category": "typo_supported", "question": "waht was my max pulse while runing today", "expected": {"outcome": "query", "metric": "peak_hr", "activity": "Running", "range": "today", "corrections": [["waht", "what"], ["runing", "running"]]}}
+{"id": "v06", "category": "typo_supported", "question": "total recorded tiem this week", "expected": {"outcome": "query", "metric": "total_time", "activity": null, "range": "this_week", "corrections": [["tiem", "time"]]}}
+{"id": "v07", "category": "typo_supported", "question": "How long did I stand lsat week?", "expected": {"outcome": "query", "metric": "time_in_activity", "activity": "Standing", "range": "last_week", "corrections": [["lsat", "last"]]}}
+{"id": "v08", "category": "typo_supported", "question": "average bpm while sittting in my latest session", "expected": {"outcome": "query", "metric": "avg_hr", "activity": "Sitting", "range": "latest_session", "corrections": [["sittting", "sitting"]]}}
+{"id": "v09", "category": "typo_unclear", "question": "how long did I rn today", "expected": {"outcome": "needs_activity", "corrections": []}}
+{"id": "v10", "category": "typo_unclear", "question": "how long was I sitnding yesterday", "expected": {"outcome": "clarify", "options": ["Sitting", "Standing"], "corrections": []}}
+{"id": "v11", "category": "medical_typo", "question": "is my heart rate helthy this week", "expected": {"outcome": "medical"}}
+{"id": "v12", "category": "medical_typo", "question": "shuold i be concernd about my avrage pulse", "expected": {"outcome": "medical"}}
+{"id": "v13", "category": "medical_typo", "question": "was my peak bpm dangerus yesterday", "expected": {"outcome": "medical"}}
+{"id": "v14", "category": "session_summary", "question": "Tell me about my last session", "expected": {"outcome": "session_summary", "range": "latest_session"}}
+{"id": "v15", "category": "session_summary", "question": "How did my latest workout go?", "expected": {"outcome": "session_summary", "range": "latest_session"}}
+{"id": "v16", "category": "session_summary", "question": "summarize my most recent recording", "expected": {"outcome": "session_summary", "range": "latest_session"}}
+{"id": "v17", "category": "session_summary", "question": "give me a recap of my last run", "expected": {"outcome": "session_summary", "range": "latest_session"}}
+{"id": "v18", "category": "activity_breakdown", "question": "What did I do today?", "expected": {"outcome": "activity_breakdown", "range": "today"}}
+{"id": "v19", "category": "activity_breakdown", "question": "breakdown of my activities this week", "expected": {"outcome": "activity_breakdown", "range": "this_week"}}
+{"id": "v20", "category": "activity_breakdown", "question": "give me an activity breakdown", "expected": {"outcome": "activity_breakdown", "range": "last_7_days"}}
+{"id": "v21", "category": "activity_breakdown", "question": "summarize my activity in the last 30 days", "expected": {"outcome": "activity_breakdown", "range": "last_30_days"}}
+{"id": "v22", "category": "ambiguous_activity", "question": "How long was I on my feet today?", "expected": {"outcome": "clarify", "options": ["Walking", "Standing"]}}
+{"id": "v23", "category": "ambiguous_activity", "question": "average heart rate while on my feet this week", "expected": {"outcome": "clarify", "options": ["Walking", "Standing"]}}
+{"id": "v24", "category": "not_built", "question": "my average heart rate this week versus last week", "expected": {"outcome": "not_built", "kind": "comparison"}}
+{"id": "v25", "category": "not_built", "question": "and walking?", "expected": {"outcome": "not_built", "kind": "follow_up"}}
+{"id": "v26", "category": "not_built", "question": "which session was my longest", "expected": {"outcome": "not_built", "kind": "longest_session"}}

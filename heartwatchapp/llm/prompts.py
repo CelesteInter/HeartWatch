@@ -167,29 +167,36 @@ ASK_RANGE_DESCRIPTIONS = {
     "all": "all sessions ever recorded",
     "latest_session": "the user's most recent session only",
 }
-# (question, metric, activity, range) -- includes the this_week /
+# (question, intent, metric, activity, range) -- includes the this_week /
 # last_week / last_7_days contrast the model got wrong in the Phase A
-# smoke test ("this week" came back as last_week). None of these may
-# repeat or closely paraphrase a dev question (eval/ask_questions_dev.jsonl):
-# tests/test_ask_vocab.py fails above 0.6 word overlap.
+# smoke test ("this week" came back as last_week). Every activity and range
+# in an example is named literally in its question (handoff 9a, 3.9): the
+# v1 examples that weren't ("the week before this one", "newest
+# recording") taught the model to fill in values the question doesn't
+# give. None of these may repeat or closely paraphrase a dev question
+# (eval/ask_questions_dev*.jsonl): tests/test_ask_vocab.py fails above 0.6
+# word overlap.
 ASK_EXAMPLES = (
-    ("avg pulse for the current week", "avg_hr", None, "this_week"),
-    ("peak heart rate today", "peak_hr", None, "today"),
-    ("mean bpm for the week before this one", "avg_hr", None, "last_week"),
-    ("average bpm across the most recent 7 days, today included", "avg_hr", None,
-     "last_7_days"),
-    ("walking duration yesterday", "time_in_activity", "Walking", "yesterday"),
-    ("max bpm while jogging in my newest recording", "peak_hr", "Running", "latest_session"),
-    ("count of recorded sessions", "session_count", None, None),
-    ("number of sessions this week", "session_count", None, "this_week"),
-    ("how much time have I recorded this month so far", None, None, None),
-    ("tell me a joke", None, None, None),
+    ("avg pulse for this week so far", "query", "avg_hr", None, "this_week"),
+    ("peak heart rate today", "query", "peak_hr", None, "today"),
+    ("mean bpm for last week", "query", "avg_hr", None, "last_week"),
+    ("average bpm across the past 7 days", "query", "avg_hr", None, "last_7_days"),
+    ("walking duration yesterday", "query", "time_in_activity", "Walking", "yesterday"),
+    ("max bpm while jogging in my latest recording", "query", "peak_hr", "Running",
+     "latest_session"),
+    ("count of recorded sessions", "query", "session_count", None, None),
+    ("number of sessions this week", "query", "session_count", None, "this_week"),
+    ("recap of my latest recording", "session_summary", None, None, "latest_session"),
+    ("how was my time split between activities yesterday", "activity_breakdown", None, None,
+     "yesterday"),
+    ("how much time have I recorded this month so far", "unsupported", None, None, None),
+    ("tell me a joke", "unsupported", None, None, None),
 )
 
 
-def _ask_example_line(question: str, metric, activity, range_name) -> str:
+def _ask_example_line(question: str, intent: str, metric, activity, range_name) -> str:
     form = {
-        "intent": "query" if metric else "unsupported",
+        "intent": intent,
         "metric": metric,
         "activity": activity,
         "range": range_name,
@@ -201,9 +208,11 @@ ASK_SYSTEM_PROMPT = (
     "You turn one question about the user's own recorded sessions into a JSON form. "
     "You never answer the question yourself.\n\n"
     "Fields:\n"
-    '- intent: "query" if the question asks for one of the metrics below, otherwise '
-    '"unsupported".\n'
-    "- metric (null if intent is unsupported):\n"
+    '- intent: "query" if the question asks for one of the metrics below; '
+    '"session_summary" if it asks for an overview of one single recorded session; '
+    '"activity_breakdown" if it asks what the user did, or how their time was split '
+    'between activities, over a time period; otherwise "unsupported".\n'
+    '- metric (null unless intent is "query"):\n'
     + "".join(f"  {m}: {ASK_METRIC_DESCRIPTIONS[m]}\n" for m in _ask_vocab.METRICS)
     + f"- activity: one of {', '.join(_ask_vocab.ACTIVITIES)}, only if the question itself "
     "names that activity (e.g. walk, run, jog, sit, stand). Most questions name none: then "

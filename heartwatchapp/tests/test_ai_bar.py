@@ -105,7 +105,7 @@ class RulesPathTests(AiBarCase):
         self.ask(bar, "peak heart rate ever")
         self.assertFalse(bar.result.isHidden())
         self.assertEqual(self.shown(bar), (
-            "Your peak heart rate across all sessions was 100 bpm (1 session).",
+            "Your heart rate peaked at 100 bpm in your one recorded session.",
             "Peak heart rate · All activities · all sessions",
             None,
         ))
@@ -121,7 +121,7 @@ class RulesPathTests(AiBarCase):
         bar = self.build(None)
         self.ask(bar, "average heart rate ever")
         self.assertEqual(bar.result_text.text(),
-                         "Your average heart rate across all sessions was 95 bpm (1 session).")
+                         "Your heart rate averaged 95 bpm in your one recorded session.")
         self.ask(bar, AI_QUESTION)
         self.assertEqual(self.shown(bar), (answers.AI_UNAVAILABLE_REPLY, None, None))
 
@@ -135,7 +135,7 @@ class AiPathTests(AiBarCase):
         self.assertEqual(messages[-1]["content"], AI_QUESTION)
         self.worker.parse_finished.emit(1, form("avg_hr"))
         self.assertEqual(self.shown(bar), (
-            "Your average heart rate across all sessions was 95 bpm (1 session).",
+            "Your heart rate averaged 95 bpm in your one recorded session.",
             "Average heart rate · All activities · all sessions",
             None,
         ))
@@ -154,13 +154,13 @@ class AiPathTests(AiBarCase):
         self.assertEqual(bar.result_text.text(), answers.THINKING_TEXT)
         self.worker.parse_finished.emit(2, form("peak_hr"))
         self.assertEqual(bar.result_text.text(),
-                         "Your peak heart rate across all sessions was 100 bpm (1 session).")
+                         "Your heart rate peaked at 100 bpm in your one recorded session.")
         # A rules question asked while the AI is busy wins too.
         self.ask(bar, AI_QUESTION)                                # request 3
         self.ask(bar, "average heart rate ever")
         self.worker.parse_finished.emit(3, form("peak_hr"))
         self.assertEqual(bar.result_text.text(),
-                         "Your average heart rate across all sessions was 95 bpm (1 session).")
+                         "Your heart rate averaged 95 bpm in your one recorded session.")
 
     def test_rapid_submits_dont_crash_or_mix_answers(self) -> None:
         bar = self.build(self.worker)
@@ -170,7 +170,7 @@ class AiPathTests(AiBarCase):
         for request_id in range(1, 21):
             self.worker.parse_finished.emit(request_id, form("avg_hr"))
         self.assertEqual(bar.result_text.text(),
-                         "Your peak heart rate across all sessions was 100 bpm (1 session).")
+                         "Your heart rate peaked at 100 bpm in your one recorded session.")
 
     def test_failures(self) -> None:
         bar = self.build(self.worker)
@@ -268,3 +268,132 @@ class AiPillTests(AiBarCase):
                 topbar.set_ai_status(status.ready, status.message, status.daemon_reachable)
                 self.assertEqual(topbar.ai_pill.text(), text)
                 self.assertEqual(topbar.ai_pill.toolTip(), status.message)
+
+
+class SuggestionButtonTests(AiBarCase):
+    """Handoff 9a, 3.7: buttons under a reply that can't answer; a click
+    asks the button's question exactly as if typed."""
+
+    def labels(self, bar: ai_bar.AiBar) -> list[str]:
+        return [b.text() for b in bar.suggestion_buttons]
+
+    def test_a_clarification_and_a_click(self) -> None:
+        bar = self.build(self.worker)
+        self.ask(bar, "how long was I on my feet ever")
+        self.assertEqual(bar.result_text.text(), "Did you mean walking or standing?")
+        self.assertEqual(self.labels(bar), ["Walking", "Standing"])
+        bar.suggestion_buttons[0].click()
+        # "how long was i walking ever": the fixture has no activity data.
+        self.assertEqual(self.shown(bar), ("You haven't recorded any activity yet.",
+                                           "Time in activity · Walking · all sessions", None))
+        self.assertEqual(self.worker.requests, [])
+
+    def test_which_activity_offers_all_four(self) -> None:
+        bar = self.build(self.worker)
+        self.ask(bar, "how much time did I spend ever")
+        self.assertEqual(self.labels(bar), ["Sitting", "Walking", "Standing", "Running"])
+
+    def test_buttons_clear_for_an_answer_and_while_thinking(self) -> None:
+        bar = self.build(self.worker)
+        self.ask(bar, "what's the weather")
+        self.assertEqual(len(bar.suggestion_buttons), 3)
+        self.ask(bar, AI_QUESTION)
+        self.assertEqual((bar.result_text.text(), bar.suggestion_buttons),
+                         (answers.THINKING_TEXT, []))
+        self.ask(bar, "peak heart rate ever")
+        self.assertEqual(bar.suggestion_buttons, [])
+
+    def test_a_click_while_thinking_replaces_the_pending_question(self) -> None:
+        # Same as typing a new question: the late model reply is ignored.
+        bar = self.build(self.worker)
+        self.ask(bar, AI_QUESTION)                                # request 1
+        bar.submit_text("peak heart rate ever")
+        self.assertEqual(bar.result_text.text(),
+                         "Your heart rate peaked at 100 bpm in your one recorded session.")
+        self.worker.parse_finished.emit(1, form("avg_hr"))
+        self.assertEqual(bar.result_text.text(),
+                         "Your heart rate peaked at 100 bpm in your one recorded session.")
+
+
+class BarMatchesDashboardTests(AiBarCase):
+    """A1: the bar's breakdown and the Dashboard's bars give the same
+    percentage for every activity on the same data."""
+
+    def test_same_percentages(self) -> None:
+        import re
+        import tempfile
+        from pathlib import Path
+
+        from PySide6.QtWidgets import QLabel
+
+        from ..scripts import demo_db
+        from ..ui import dashboard
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path, _ = demo_db.build_demo_db(Path(tmp) / "demo.db", data_seed=0)
+            view = dashboard.DashboardView(self.theme, db_path=path)
+            self.addCleanup(view.deleteLater)
+            on_dashboard = {}
+            for row in view.findChildren(dashboard.ActivityBar):
+                name, pct = (label.text() for label in row.findChildren(QLabel))
+                on_dashboard[name.lower()] = pct
+            bar = ai_bar.AiBar(self.theme, self.worker, db_path=path)
+            self.addCleanup(bar.deleteLater)
+            self.ask(bar, "give me an activity breakdown")
+        parts = bar.result_text.text().split(": ", 1)[1].rstrip(".").split(", ")
+        in_bar = dict(re.fullmatch(r"(\w+) .*\((\d+%)\)", part).groups() for part in parts)
+        self.assertEqual(in_bar, on_dashboard)
+        self.assertEqual(on_dashboard,
+                         {"walking": "41%", "standing": "25%", "sitting": "21%", "running": "13%"})
+
+
+class DevToolBarTests(AiBarCase):
+    """J. HEARTWATCH_ASK_DEV: off writes nothing and adds no marker; on adds
+    the marker and logs each question without any number from the reply."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        import tempfile
+        from pathlib import Path
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.log = Path(tmp.name) / "dev_logs" / "ask_questions.jsonl"
+
+    def build_logged(self) -> ai_bar.AiBar:
+        bar = self.build(self.worker)
+        bar._dev_log_path = self.log
+        return bar
+
+    def test_off_by_default(self) -> None:
+        with mock.patch.dict(os.environ, {"HEARTWATCH_ASK_DEV": ""}):
+            bar = self.build_logged()
+            self.ask(bar, "avrage heart rate ever")
+        self.assertEqual(self.shown(bar)[1],
+                         "Average heart rate · All activities · all sessions · corrected: "
+                         "avrage → average")
+        self.assertFalse(self.log.exists())
+        self.assertFalse(self.log.parent.exists())
+
+    def test_on_marks_and_logs(self) -> None:
+        with mock.patch.dict(os.environ, {"HEARTWATCH_ASK_DEV": "1"}):
+            bar = self.build_logged()
+            self.ask(bar, "avrage heart rate ever")
+            self.assertEqual(bar.understood_text.text(),
+                             "Average heart rate · All activities · all sessions · corrected: "
+                             "avrage → average · rules (corrected)")
+            self.ask(bar, "is my heart rate healthy")
+            self.assertEqual(bar.understood_text.text(), "guard")
+            self.ask(bar, AI_QUESTION)
+            self.worker.parse_finished.emit(1, form("avg_hr"))
+            self.assertTrue(bar.understood_text.text().endswith(" · AI"))
+        lines = [json.loads(line) for line in self.log.read_text().splitlines()]
+        self.assertEqual([e["decided_by"] for e in lines], ["rules", "guard", "llm"])
+        self.assertEqual(lines[0]["question"], "avrage heart rate ever")
+        self.assertEqual(lines[0]["corrections"], [["avrage", "average"]])
+        # The replies said 95 bpm; the log never does (timing and clock
+        # fields left out, as their digits are arbitrary).
+        logged = json.dumps([{k: v for k, v in e.items() if k not in ("latency_ms", "timestamp")}
+                             for e in lines])
+        self.assertNotIn("95", logged)
+        self.assertNotIn("bpm", logged)

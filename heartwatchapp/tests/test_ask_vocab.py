@@ -16,13 +16,15 @@ from __future__ import annotations
 import json
 import unittest
 
-from ..ask import guard, llm_parser, rules, vocab
+from ..ask import guard, llm_parser, rules, typos, vocab
 from ..ask.answers import RULES_EXAMPLES
 from ..data import queries
 from ..llm import prompts
 from ..llm.validate import BLOCKED_TERMS
 from ..ml.inference import CLASSES
 from ..scripts import eval_ask
+
+DEV_V11_QUESTIONS = eval_ask.APP_DIR / "eval" / "ask_questions_dev_v11.jsonl"
 
 
 def token_jaccard(a: str, b: str) -> float:
@@ -47,7 +49,8 @@ class SingleSourceTests(unittest.TestCase):
         self.assertEqual(enum("metric"), vocab.METRICS)
         self.assertEqual(enum("activity"), vocab.ACTIVITIES)
         self.assertEqual(enum("range"), vocab.RANGES)
-        self.assertEqual(tuple(props["intent"]["enum"]), ("query", "unsupported"))
+        self.assertEqual(tuple(props["intent"]["enum"]),
+                         ("query", "session_summary", "activity_breakdown", "unsupported"))
 
     def test_every_activity_range_and_metric_has_synonyms(self) -> None:
         self.assertEqual(set(vocab.ACTIVITY_SYNONYMS), set(vocab.ACTIVITIES))
@@ -64,21 +67,23 @@ class SingleSourceTests(unittest.TestCase):
 
     def test_prompt_examples_fit_the_schema(self) -> None:
         # Every example form in the prompt must itself be a valid reply.
-        for question, metric, activity, range_name in prompts.ASK_EXAMPLES:
-            with self.subTest(question=question):
-                line = prompts._ask_example_line(question, metric, activity, range_name)
+        for example in prompts.ASK_EXAMPLES:
+            with self.subTest(question=example[0]):
+                line = prompts._ask_example_line(*example)
                 reply = line.split(" -> ", 1)[1]
                 self.assertNotEqual(llm_parser.parse_reply(reply).status, "invalid")
 
     def test_the_prompt_contrasts_the_three_week_like_ranges(self) -> None:
-        ranges = {example[3] for example in prompts.ASK_EXAMPLES}
+        ranges = {example[4] for example in prompts.ASK_EXAMPLES}
         self.assertTrue({"this_week", "last_week", "last_7_days"} <= ranges)
 
     def test_no_prompt_example_is_close_to_a_dev_question(self) -> None:
         # A prompt example that (nearly) repeats a dev question lets the
         # model score well on that question for the wrong reason. Limit:
         # Jaccard overlap of normalized word sets at most 0.6.
-        dev = eval_ask.load_questions(eval_ask.DEFAULT_QUESTIONS)
+        dev = eval_ask.load_questions(eval_ask.DEFAULT_QUESTIONS) + eval_ask.load_questions(
+            DEV_V11_QUESTIONS
+        )
         for example, *_ in prompts.ASK_EXAMPLES:
             for q in dev:
                 with self.subTest(example=example, id=q["id"]):
@@ -128,6 +133,19 @@ class GuardVocabularyTests(unittest.TestCase):
         for q in eval_ask.load_questions(eval_ask.DEFAULT_QUESTIONS):
             with self.subTest(id=q["id"]):
                 blocked = guard.check(q["question"]) is not None
+                self.assertEqual(blocked, q["expected"]["outcome"] == "medical", q["question"])
+
+    def test_with_typos_too_no_dev_question_is_newly_refused(self) -> None:
+        # Handoff 9a, 3.2: the guard with typo matching refuses every
+        # medical question in both dev files (v1.1's have typos) and no
+        # other.
+        questions = eval_ask.load_questions(eval_ask.DEFAULT_QUESTIONS) + eval_ask.load_questions(
+            DEV_V11_QUESTIONS
+        )
+        for q in questions:
+            with self.subTest(id=q["id"]):
+                corrected = typos.correct(q["question"], guard.GUARD_WORDS).text
+                blocked = guard.check_question(q["question"], corrected) is not None
                 self.assertEqual(blocked, q["expected"]["outcome"] == "medical", q["question"])
 
 

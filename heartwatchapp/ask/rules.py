@@ -25,9 +25,22 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from ..data.queries import MetricRequest
+from ..data.queries import LATEST_SESSION, MetricRequest
 from . import vocab
-from .parse_result import ACCEPTED, DEFERRED, UNSUPPORTED, ParseResult
+from .parse_result import (
+    ACCEPTED,
+    CLARIFY,
+    DEFERRED,
+    INTENT_BREAKDOWN,
+    INTENT_SUMMARY,
+    NOT_BUILT,
+    NOT_BUILT_COMPARISON,
+    NOT_BUILT_FOLLOW_UP,
+    NOT_BUILT_LONGEST,
+    UNSUPPORTED,
+    Option,
+    ParseResult,
+)
 
 # Words that carry no meaning of their own in a supported question. Any
 # other word that isn't part of a matched phrase makes the parser defer.
@@ -83,6 +96,14 @@ def _table() -> list[tuple[str, str, re.Pattern[str]]]:
     for activity, phrases in vocab.ACTIVITY_SYNONYMS.items():
         rows += [("activity", activity, vocab.phrase_pattern(p)) for p in phrases]
     rows += [("session", "", vocab.phrase_pattern(p)) for p in vocab.SESSION_WORDS]
+    rows += [("ambiguous_activity", phrase, vocab.phrase_pattern(phrase))
+             for phrase in vocab.AMBIGUOUS_ACTIVITY_PHRASES]
+    rows += [("summary", "", vocab.phrase_pattern(p)) for p in vocab.SUMMARY_PHRASES]
+    rows += [("breakdown", "", vocab.phrase_pattern(p)) for p in vocab.BREAKDOWN_PHRASES]
+    rows += [("not_built", NOT_BUILT_COMPARISON, vocab.phrase_pattern(p))
+             for p in vocab.COMPARISON_WORDS]
+    rows += [("not_built", NOT_BUILT_LONGEST, vocab.phrase_pattern(p))
+             for p in vocab.LONGEST_WORDS]
     rows += [("unsupported", "", vocab.phrase_pattern(p)) for p in vocab.UNSUPPORTED_WORDS]
     rows += [("unsupported", "", vocab.phrase_pattern(p))
              for p in vocab.UNSUPPORTED_COMMAND_PHRASES]
@@ -106,7 +127,14 @@ _SWALLOWS = {
     "session": {"range", "ambiguous"},
     "activity": set(),
     "unsupported": set(),
+    "ambiguous_activity": set(),
+    "summary": {"summary", "breakdown"},
+    "breakdown": {"summary", "breakdown"},
+    "not_built": set(),
 }
+_FOLLOW_UP_START = re.compile(
+    "^(?:" + "|".join(re.escape(p) for p in vocab.FOLLOW_UP_STARTS) + ")(?![a-z0-9'])"
+)
 
 
 def _matches(text: str) -> list[_Match]:
@@ -121,13 +149,11 @@ def _matches(text: str) -> list[_Match]:
     ]
 
 
-def _deferred(reason: str, range_hint: str | None) -> ParseResult:
-    return ParseResult(DEFERRED, None, "rules", reason, range_hint=range_hint)
-
-
 def parse(question: str) -> ParseResult:
-    """Accepted (with a MetricRequest whose range may be None), deferred,
-    or unsupported. Never raises."""
+    """Accepted (a MetricRequest whose range may be None, or a summary /
+    breakdown intent), deferred, unsupported, clarify (which activity?) or
+    not built (a comparison, a follow-up, the longest session). Never
+    raises. `question` may already be typo-corrected (ask/typos.py)."""
     text = vocab.normalize(question)
     matches = _matches(text)
     by_kind: dict[str, list[_Match]] = {}
@@ -144,44 +170,74 @@ def parse(question: str) -> ParseResult:
     metrics = {m.value for m in by_kind.get("metric", [])}
     if has_hr:
         metrics |= modifiers
+    detected = {
+        "activities": tuple(sorted(activities)),
+        "ranges": tuple(r for r in vocab.RANGES if r in ranges),
+        "metrics": tuple(sorted(metrics)),
+    }
+
+    def result(status: str, reason: str, **fields) -> ParseResult:
+        return ParseResult(status, None, "rules", reason, range_hint=range_hint,
+                           **{**detected, **fields})
 
     if by_kind.get("unsupported"):
         words = ", ".join(text[m.start:m.end] for m in by_kind["unsupported"])
-        return ParseResult(UNSUPPORTED, None, "rules", f"asks for something v1 can't do: {words}")
+        return result(UNSUPPORTED, f"asks for something v1 can't do: {words}")
     metric_words = metrics or modifiers or has_hr or has_session_word
-    if not metric_words and not activities:
-        return ParseResult(UNSUPPORTED, None, "rules", "no metric or activity words")
+    if by_kind.get("not_built"):
+        kind = by_kind["not_built"][0].value
+        return result(NOT_BUILT, f"not built yet: {kind}", kind=kind)
+    if _FOLLOW_UP_START.search(text) and not (metrics or modifiers or has_hr):
+        return result(NOT_BUILT, "a follow-up to an earlier question",
+                      kind=NOT_BUILT_FOLLOW_UP)
 
     unknown = [
         t.group(0) for t in _TOKEN.finditer(text)
         if t.group(0) not in FILLER_WORDS
         and not any(m.start <= t.start() and t.end() <= m.end for m in matches)
     ]
+    if (by_kind.get("summary") or by_kind.get("breakdown")) and not (
+        metrics or modifiers or has_hr
+    ):
+        return _intent(by_kind, ranges, ambiguous, unknown, result)
+
+    if not metric_words and not activities:
+        return result(UNSUPPORTED, "no metric or activity words")
     if unknown:
-        return _deferred(f"unrecognized words: {', '.join(unknown)}", range_hint)
+        return result(DEFERRED, f"unrecognized words: {', '.join(unknown)}")
     if ambiguous:
-        return _deferred("a time phrase with no single matching range", range_hint)
+        return result(DEFERRED, "a time phrase with no single matching range")
     if len(metrics) != 1:
         if not metrics:
-            return _deferred("no metric", range_hint)
-        return _deferred(f"several metrics: {', '.join(sorted(metrics))}", range_hint)
+            return result(DEFERRED, "no metric")
+        return result(DEFERRED, f"several metrics: {', '.join(sorted(metrics))}")
     if modifiers and not has_hr:
-        return _deferred("average/peak without heart rate", range_hint)
+        return result(DEFERRED, "average/peak without heart rate")
     if has_hr and not modifiers:
-        return _deferred("heart rate without average or peak", range_hint)
+        return result(DEFERRED, "heart rate without average or peak")
     if len(activities) > 1:
-        return _deferred(f"several activities: {', '.join(sorted(activities))}", range_hint)
+        return result(DEFERRED, f"several activities: {', '.join(sorted(activities))}")
     if len(ranges) > 1:
-        return _deferred(f"several ranges: {', '.join(sorted(ranges))}", range_hint)
+        return result(DEFERRED, f"several ranges: {', '.join(sorted(ranges))}")
     # An activity with a sessions word is deferred -- unless the metric is
     # an explicit session count ("how many sessions did I run", "how many
     # walking sessions"), which normalize() turns into the fixed "not by
     # activity yet" reply. A bare "sessions" ("... across my sessions")
     # still defers.
     if activities and has_session_word and metrics != {"session_count"}:
-        return _deferred("an activity together with a sessions word", range_hint)
+        return result(DEFERRED, "an activity together with a sessions word")
 
     (metric,) = metrics
+    if not activities and by_kind.get("ambiguous_activity"):
+        # "on my feet": ask which activity, never guess. Each option is the
+        # whole question with the phrase replaced by that activity.
+        phrase = by_kind["ambiguous_activity"][0].value
+        options = tuple(
+            Option(activity, vocab.phrase_pattern(phrase).sub(activity.lower(), text, count=1))
+            for activity in vocab.AMBIGUOUS_ACTIVITY_PHRASES[phrase]
+        )
+        return result(CLARIFY, f"{phrase!r} could be more than one activity", options=options,
+                      kind="activity")
     activity = next(iter(activities), None)
     range_name = next(iter(ranges), None)
     return ParseResult(
@@ -191,4 +247,32 @@ def parse(question: str) -> ParseResult:
         "keyword match",
         range_source="rules" if range_name else None,
         range_hint=range_hint,
+        **detected,
     )
+
+
+def _intent(by_kind: dict[str, list[_Match]], ranges: set[str], ambiguous: bool,
+            unknown: list[str], result) -> ParseResult:
+    """A summary or breakdown question (no metric words). A summary of a
+    single session ("my last session", "my last run") is the session
+    summary; a summary of any other range, or a breakdown phrase, is the
+    activity breakdown for that range. Activity words inside the range
+    phrase ("my last run") don't count; any other activity word, an
+    unknown word, or more than one range defers."""
+    range_matches = by_kind.get("range", [])
+    loose_activities = [
+        m for m in by_kind.get("activity", [])
+        if not any(m.inside(r) for r in range_matches)
+    ]
+    if unknown:
+        return result(DEFERRED, f"unrecognized words: {', '.join(unknown)}")
+    if ambiguous or len(ranges) > 1:
+        return result(DEFERRED, "a time phrase with no single matching range")
+    if loose_activities:
+        return result(DEFERRED, "an activity in a summary or breakdown question")
+    range_name = next(iter(ranges), None)
+    if by_kind.get("summary") and range_name == LATEST_SESSION:
+        return result(ACCEPTED, "keyword match", intent=INTENT_SUMMARY,
+                      intent_range=LATEST_SESSION)
+    return result(ACCEPTED, "keyword match", intent=INTENT_BREAKDOWN, intent_range=range_name,
+                  summary_fallback=bool(by_kind.get("summary")))

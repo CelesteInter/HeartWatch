@@ -40,42 +40,110 @@ own recorded sessions, for example:
 - "Peak heart rate in my most recent session"
 - "How many sessions did I record in the last 30 days?"
 
-It can answer five things -- **average heart rate, peak heart rate, time
+It can answer five numbers -- **average heart rate, peak heart rate, time
 spent in one activity (Sitting, Walking, Standing, Running), number of
 sessions, and total recorded time** -- for today, yesterday, this week
 (since Monday), last week (the previous Monday to Sunday), the last 7 days,
 the last 30 days, all sessions, or your latest session. With no time
 period it uses the last 7 days, the same as the Dashboard.
 
+It also answers two questions that aren't a single number:
+
+- **Session summary** -- "Tell me about my last session", "How did my
+  latest workout go?", "give me a recap of my last run": the same plain
+  summary the Sessions view shows for your latest finished session
+  (`format_stats_plain()`, unchanged), after a lead-in with its date and
+  start time, plus the low-confidence note when it applies. It's always
+  the latest session, whatever activity the question names, and the
+  understood line says *Session summary · latest session*.
+- **Activity breakdown** -- "What did I do today?", "breakdown of my
+  activities this week": total activity time, then each activity, most
+  time first, with its share. These are the Dashboard's numbers, order and
+  percentages (each share rounded on its own, as on the Dashboard, so they
+  can add up to 99 or 101). Asking for a summary of several sessions
+  ("summarize my activity in the last 30 days") gives the breakdown, and
+  the understood line says so.
+
 **The AI only understands; Python answers.** The question is turned into a
 small form -- which number, which activity, which time period -- and then
 Python looks the answer up with the same code the Dashboard uses
 (`data/queries.py`) and writes the sentence (`ask/answers.py`). The model
-never writes a number or a word you read. Under every answer the bar shows
-what it understood, e.g. *Average heart rate · Running · this week*, so a
-misunderstanding is visible straight away. If the activity times come from
-the dummy classifier it also says *"Activity times are from simulated
-predictions."*, by the same rule as the Dashboard.
+never writes a number or a word you read. Replies read like a person
+("You walked for 2 minutes 20 seconds yesterday, in one session.") but
+say exactly the same facts; no reply judges or compares. Under every
+answer the bar shows what it understood, e.g. *Average heart rate ·
+Running · this week*, so a misunderstanding is visible straight away. If
+the activity times come from the dummy classifier it also says *"Activity
+times are from simulated predictions."*, by the same rule as the Dashboard.
+
+**Typos.** Clear typos are corrected before anything else (`ask/typos.py`,
+standard-library `difflib`): a word the bar doesn't know, of four or more
+letters, is replaced by a known word when it's at least 80% similar or one
+swap of two neighbouring letters away ("waht" -> "what"), and no other
+meaning is nearly as close. The understood line names every correction
+(*corrected: walkign → walking*). If two meanings are equally close
+("sitnding": standing or sitting) the bar asks "Did you mean standing or
+sitting?" with a button for each. Short words ("rn") are never guessed.
 
 **Health questions get a fixed reply.** Anything asking whether a number is
 healthy, normal, safe, too high, higher than usual, or what you should do
 gets the same reply and no number, even if it also names a metric. This
-check is plain code (`ask/guard.py`) and runs before anything else.
+check is plain code (`ask/guard.py`) and runs before either parser, on the
+question as typed and on its typo-corrected form, with its own looser
+fuzzy match on top, so "is my heart rate helthy" is refused too. A word
+that is exactly a supported word ("heart") is never read as a health word.
+
+**When it can't answer, it says why and offers questions that work.**
+Replies that can't give a number -- not supported, not understood, which
+activity, nothing recorded for that period, the AI not running, or
+something not built yet -- show up to three clickable example questions,
+chosen from what the question named (an activity, a time period).
+Clicking one asks it exactly as if typed. Every suggestion is answered by
+the keyword parser alone, so they work without Ollama. A phrase that
+could mean two activities ("on my feet") asks which, with a button for
+each; "Which activity?" offers all four. Not built yet, each with its own
+reply: comparing two periods ("this week vs last week"), follow-up
+questions ("and walking?" -- each question stands alone), and your
+longest session.
 
 How a question is understood (`HEARTWATCH_ASK_MODE`, read each time a
 question is asked):
 
 | Value | What happens |
 |---|---|
-| `hybrid` (default; also used if unset, empty, or unrecognized) | A keyword parser (`ask/rules.py`) answers simple questions instantly with no AI; only questions it isn't sure about go to the local model (`gemma3:1b` via Ollama). If the keyword parser saw exactly one clear time phrase, its time period is used even if the model picked another. |
-| `rules` | Keyword parser only; Ollama is never contacted. Anything it isn't sure about gets "Sorry, I didn't understand that." |
+| `hybrid` (default; also used if unset, empty, or unrecognized) | A keyword parser (`ask/rules.py`) answers simple questions instantly with no AI; only questions it isn't sure about go to the local model (`gemma3:1b` via Ollama). |
+| `rules` | Keyword parser only; Ollama is never contacted. Anything it isn't sure about gets "Sorry, I didn't catch that." with suggestions. |
 | `llm` | Every question (after the health check) goes to the model. Used by the evaluation to compare the parsers. |
+
+**Every activity or time period the AI picks must appear in the question**
+(`ask/evidence.py`), in every mode. The model sometimes copies a value
+from its prompt's examples or simply guesses ("and walking?" became
+*yesterday*; "peak heart rate in my latest session" gained *Running*), so
+an activity is kept only if the question names it or a synonym ("jog" for
+Running), and a time period only if the question has a phrase for it
+("the week before this one" counts for last week). Otherwise the activity
+is dropped (and the bar asks which one, if the question needs one) and the
+time period falls back to the last 7 days, shown as *(default)*. If the
+question names exactly one time period, that one is used whatever the
+model picked (in v1 this override applied in `hybrid` only). A summary or
+breakdown from the model is kept only if the question asks for one. The
+metric itself isn't checked -- understanding paraphrases is the model's
+job.
 
 Without Ollama, `hybrid` still answers everything the keyword parser
 understands; anything else gets a reply saying the AI model isn't running,
 with example questions that work without it. The keyword parser only
 accepts when it's sure (one metric, at most one activity and one time
 period, and no words it doesn't know); otherwise it passes the question on.
+
+**Developer tools** (off by default): with `HEARTWATCH_ASK_DEV=1` the
+understood line ends with who answered (*· rules*, *· AI*, *· guard*, or
+*· rules (corrected)*), and each question is appended as one JSON line to
+`heartwatchapp/dev_logs/ask_questions.jsonl` (gitignored): the time, the
+question as typed and corrected, the corrections, who decided, what was
+understood (the form, or the kind of reply), what the evidence check
+dropped, and how long it took. **It never records the reply or any number
+from your data.** With the setting off, nothing is written.
 
 ### Evaluating the question parsers
 
@@ -121,20 +189,46 @@ Experiment 3 is the first with no prompt example near a dev question
 (`tests/test_ask_vocab.py` now enforces it), so it is the clean dev
 baseline. The held-out set remains the real measure.
 
-The "(N sessions)" after an answer counts only the sessions that
-contributed to the number: for "time spent Running", sessions with some
-Running; for heart rate while Running, sessions with heart-rate samples
-during Running. A real 0 ("Time spent Standing last week: 0 seconds.") has
-no count.
+**v1.1 (October 20, 2026).** The same command takes a second question file,
+`heartwatchapp/eval/ask_questions_dev_v11.jsonl` (`--questions PATH`): 26
+questions with typos, medical questions with typos, the two new question
+types, "on my feet", and things not built yet. Its expected forms may also
+list the typo corrections (scored only when listed), the options of a
+clarification, or which feature isn't built; a false accept also covers
+answering instead of asking, a misspelled medical question that isn't
+refused, and a wrong correction that leads to a number. In `llm` mode
+each model reply is also scored without the evidence check (the same
+reply, not a second call), and `summary.md` puts the two side by side.
+The eval database's demo session is pinned to an hour after "now", so the
+summary's date and time are the same on every run.
 
-### Known limitations (v1)
+On the dev questions with v1.1: false accepts on the original 30 stayed at
+0 for `rules` and `hybrid` (hybrid 30/30 exact) and fell from 12 to 3 for
+`llm`; on the 26 new questions they were 0 for `rules` and `hybrid` and 2
+for `llm` (12 before the evidence check). Both runs were identical apart
+from timings.
 
-- One question at a time: a follow-up like "and what about walking?" isn't
-  understood.
+The number of sessions after an answer ("in one session", "across 3
+sessions") counts only the sessions that contributed to the number: for
+time spent running, sessions with some Running; for heart rate while
+Running, sessions with heart-rate samples during Running. It's left out
+for the latest session and for a real zero ("You didn't spend any time
+standing last week.").
+
+### Known limitations (v1.1)
+
+- One question at a time: a follow-up like "and what about walking?" gets
+  a reply asking for the whole question.
 - Text answers only -- no charts -- and no commands ("start recording").
+- Comparisons ("this week vs last week") and the longest session aren't
+  built yet; each gets its own reply with suggestions.
 - "My last run" is read as *latest session, Running*: the running part of
   your most recent session, not your most recent session that included
-  running.
+  running. For a summary ("recap of my last run") it's simply your latest
+  session.
+- In `llm` mode, comparisons, follow-ups and "longest" still go to the
+  model (the keyword parser is what recognizes them), so the AI-only
+  numbers count those as misses.
 - Counting sessions by activity ("how many running sessions") isn't
   supported yet and gets a fixed reply (straight from the keyword parser
   when the question says "how many / number of ... sessions").
@@ -305,6 +399,13 @@ real recordings.
   temporary folder is always new, so it never needs `--overwrite`.
 - `--data-seed N` fixes the heart-rate values; leave it out for random
   ones. `--no-launch` builds the database and exits.
+- `--history-days N` also adds one finished session on each of the N days
+  before today (at a random time between 7 am and 8 pm, with a random mix
+  of activities), so questions about "yesterday" or "last week" have data
+  to answer from. Off by default. The extra sessions use their own random
+  generator derived from `--data-seed`, and are written after the demo
+  session, so the demo session itself -- its number, its values, and being
+  the latest session -- is exactly the same with or without them.
 - `--from-real` starts from a copy of the real database instead of an
   empty one, for the rare case you want real sessions alongside the demo.
   It prints *"Close HeartWatch before using --from-real; copying while the
@@ -375,6 +476,7 @@ before touching `llm/` or the database.
 | Ping Ollama with a chat request to see if it's up | Use `list` (`health_check()`): a chat loads the model into memory |
 | Pass `keep_alive=-1` to keep the model warm | Use Ollama's default (5 min) and preload on focus at most once per period (`ui/ai_bar.py`) |
 | Tune the keyword parser on the held-out questions | Tune on `eval/ask_questions_dev.jsonl` only |
+| Trust an activity or time period the AI returns | Every activity or range the AI returns must appear in the question; never trust the model's guesses (`ask/evidence.py`) |
 
 **Summary mode.** `HEARTWATCH_SUMMARY_MODE=plain` (the default) shows the
 app's own summary; `llm` brings back the AI path. Plain is the default
@@ -429,7 +531,7 @@ relaunch.
 ```
 heartwatchapp/
 ├── main.py              app entry point
-├── config.py            environment-variable settings (HEARTWATCH_DB_PATH, HEARTWATCH_SUMMARY_MODE, HEARTWATCH_ASK_MODE)
+├── config.py            environment-variable settings (HEARTWATCH_DB_PATH, HEARTWATCH_SUMMARY_MODE, HEARTWATCH_ASK_MODE, HEARTWATCH_ASK_DEV)
 ├── ui/
 │   ├── main_window.py   QMainWindow shell (sidebar · topbar · stack · AI bar)
 │   ├── sidebar.py       64px icon-only nav (QToolButton + QButtonGroup)
@@ -450,12 +552,16 @@ heartwatchapp/
 │   └── stats.py         every metric (average/peak HR, time per activity, totals) + session summaries
 ├── ask/                 the AI bar's question pipeline (no Qt)
 │   ├── vocab.py         metrics, activities, ranges and synonyms -- one source
-│   ├── guard.py         health/advice check, before any parser
+│   ├── typos.py         typo correction (difflib), before everything else
+│   ├── guard.py         health/advice check, before any parser (typos too)
 │   ├── rules.py         keyword parser
 │   ├── llm_parser.py    JSON schema + checks for the model's form
+│   ├── evidence.py      drops any activity/range/intent the question doesn't back
 │   ├── parse_result.py  ParseResult, shared by both parsers
-│   ├── pipeline.py      guard -> rules -> (AI) -> normalize -> validate -> run -> answer
-│   └── answers.py       every sentence the bar shows
+│   ├── pipeline.py      typos -> guard -> rules -> (AI -> evidence) -> normalize -> run -> answer
+│   ├── answers.py       every sentence the bar shows
+│   ├── suggest.py       clickable example questions (all answerable without the AI)
+│   └── devlog.py        HEARTWATCH_ASK_DEV marker and local question log
 ├── eval/
 │   └── ask_questions_dev.jsonl  dev questions for scripts/eval_ask.py
 ├── llm/
@@ -482,7 +588,9 @@ heartwatchapp/
     ├── test_ask_vocab.py      one source of words; guard never blocks a supported phrase
     ├── test_ask_rules.py      keyword parser: accepts, deferrals, unsupported
     ├── test_ask_pipeline.py   metric x activity table, modes, range override, AI parser (mocked)
-    ├── test_ask_answers.py    every answer template and fixed reply
+    ├── test_ask_answers.py    every answer template and fixed reply; numbers and words checked
+    ├── test_ask_v11.py        typos, guard with typos, evidence check, summary, breakdown, suggestions
+    ├── test_ask_regressions.py  the v1 wrong answers (each failed on ask-v1)
     ├── test_eval_ask.py       ask eval: real-DB refusal, scoring, rules-mode run
     └── test_ai_bar.py         AI bar offscreen: answers, stale replies, timeout, preload
 ```
@@ -494,7 +602,7 @@ heartwatchapp/
 | 1 | App shell (window, sidebar, topbar, stack, AI bar) | done |
 | 2 | Dashboard — cards / bars / donut / sessions (demo data) | done |
 | 3 | Live Monitor — dummy sine HR + IMU axes; also writes dummy activity predictions (`model_version "demo-dummy"`) until milestone 6 | done |
-| 4 | "Ask about your data" bar — keyword parser + local model (gemma3:1b) fill a form; Python answers via `data/queries.py` | done (v1; see Known limitations) |
+| 4 | "Ask about your data" bar — keyword parser + local model (gemma3:1b) fill a form; Python answers via `data/queries.py` | done (v1.1: typos, session summary, activity breakdown, evidence check, suggestions; see Known limitations) |
 | 5 | SQLite integration (replace demo data) | done for the Dashboard, Sessions and the AI bar (all through `data/queries.py`); the Live Monitor still streams dummy data |
 | 6 | BLE stream from ESP32-S3 + real TFLite inference | not started |
 | — | Session summaries | done — plain (Python-written) by default; AI phrasing via Ollama / gemma3:1b with `HEARTWATCH_SUMMARY_MODE=llm`, degrades to the plain summary otherwise |

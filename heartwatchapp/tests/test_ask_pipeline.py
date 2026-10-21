@@ -76,27 +76,27 @@ class MetricActivityTableTests(PipelineCase):
         cases = [
             # avg_hr: all samples (90 + 100) / 2 = 95; while Running only the
             # 5 s sample, 100.
-            ("average heart rate today", "Your average heart rate today was 95 bpm (1 session).",
+            ("average heart rate today", "Your heart rate averaged 95 bpm today, in one session.",
              "Average heart rate · All activities · today", None),
             ("average heart rate while running today",
-             "Your average heart rate while Running today was 100 bpm (1 session).",
+             "Your heart rate averaged 100 bpm while running today, in one session.",
              "Average heart rate · Running · today", sim),
             # peak_hr: 100 overall; while Walking only the 0 s sample, 90.
-            ("peak heart rate today", "Your peak heart rate today was 100 bpm (1 session).",
+            ("peak heart rate today", "Your heart rate peaked at 100 bpm today, in one session.",
              "Peak heart rate · All activities · today", None),
             ("peak heart rate while walking today",
-             "Your peak heart rate while Walking today was 90 bpm (1 session).",
+             "Your heart rate peaked at 90 bpm while walking today, in one session.",
              "Peak heart rate · Walking · today", sim),
             # time_in_activity: Running owns [5, 10 s) = 5 s.
-            ("how long did I run today", "Time spent Running today: 5 seconds (1 session).",
+            ("how long did I run today", "You ran for 5 seconds today, in one session.",
              "Time in activity · Running · today", sim),
             # session_count: one finished session today.
             ("how many sessions today", "You recorded 1 session today.",
              "Number of sessions · today", None),
             # total_time: 10 s; with an activity it becomes Running's 5 s.
-            ("total time today", "Total recorded time today: 10 seconds (1 session).",
+            ("total time today", "You recorded 10 seconds in total today, in one session.",
              "Total recorded time · today", None),
-            ("total time running today", "Time spent Running today: 5 seconds (1 session).",
+            ("total time running today", "You ran for 5 seconds today, in one session.",
              "Time in activity · Running · today", sim),
         ]
         for question, text, understood, caption in cases:
@@ -111,7 +111,7 @@ class MetricActivityTableTests(PipelineCase):
         answer = self.ask("how much time did I spend today")
         self.assertEqual(answer.outcome, "needs_activity")
         self.assertEqual(answer.text,
-                         "Which activity? I can answer for Sitting, Walking, Standing or Running.")
+                         "Which activity do you mean: sitting, walking, standing or running?")
         self.assertIsNone(answer.result)
 
     def test_session_count_by_activity_isnt_supported(self) -> None:
@@ -150,7 +150,7 @@ class MetricActivityTableTests(PipelineCase):
         self.assertEqual(answer.understood,
                          "Average heart rate · All activities · last 7 days (default)")
         self.assertEqual(answer.text,
-                         "Your average heart rate in the last 7 days was 95 bpm (1 session).")
+                         "Your heart rate averaged 95 bpm in the last 7 days, in one session.")
 
     def test_normalize_table(self) -> None:
         cases = [
@@ -202,7 +202,7 @@ class ModeTests(PipelineCase):
         answer = self.ask("average heart rate on the treadmill today", "hybrid", model)
         self.assertEqual(len(model.calls), 1)
         self.assertEqual((answer.source, answer.outcome), ("llm", "query"))
-        self.assertEqual(answer.text, "Your average heart rate today was 95 bpm (1 session).")
+        self.assertEqual(answer.text, "Your heart rate averaged 95 bpm today, in one session.")
         messages, schema = model.calls[0]
         self.assertEqual(messages[-1]["content"], "average heart rate on the treadmill today")
         self.assertEqual(schema, llm_parser.response_schema())
@@ -265,10 +265,19 @@ class RangeOverrideTests(PipelineCase):
                          FakeModel(form("avg_hr", None, "last_7_days")))
         self.assertEqual((vague.parse.range_source, vague.request.range), ("llm", "last_7_days"))
 
-    def test_llm_mode_never_overrides(self) -> None:
+    def test_llm_mode_overrides_too(self) -> None:
+        # Handoff 9a, 3.5 / A5: the evidence check runs in every mode, so
+        # the question's one range ("today") wins in llm mode as well.
         model = FakeModel(form("avg_hr", None, "last_week"))
         answer = self.ask("average heart rate on the treadmill today", "llm", model)
-        self.assertEqual((answer.request.range, answer.parse.range_source), ("last_week", "llm"))
+        self.assertEqual((answer.request.range, answer.parse.range_source, answer.parse.llm_range),
+                         ("today", "rules", "last_week"))
+        # Without the check (the evaluation's "before" measurement) the
+        # model's range stands.
+        raw = pipeline.answer_question("average heart rate on the treadmill today",
+                                       conn_or_path=self.fixture.path, now=NOW_DT, mode="llm",
+                                       llm=model, check_evidence=False)
+        self.assertEqual((raw.request.range, raw.parse.range_source), ("last_week", "llm"))
 
 
 class BadModelReplyTests(PipelineCase):
