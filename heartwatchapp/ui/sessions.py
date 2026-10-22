@@ -1,5 +1,7 @@
-"""Section 3 — Sessions. Filterable history backed by list_sessions();
-double-clicking a row opens a detail dialog backed by get_session_timeline().
+"""Section 3 — Sessions. Filterable history backed by data/queries.py's
+list_sessions() (Avg/Peak BPM computed by data/stats.py, like the
+Dashboard's); double-clicking a row opens a detail dialog backed by
+get_session_timeline().
 """
 
 from __future__ import annotations
@@ -21,13 +23,15 @@ from PySide6.QtWidgets import (
 )
 
 from .. import config
-from ..data import db, stats
+from ..data import db, queries, stats
 from ..llm.worker import LlmWorker
 from .charts import _CanvasHost
 from .theme import Theme
 from .widgets import Card, Divider, PlaceholderState, clear_layout, heading, muted
 
-DATE_RANGES = {"Last 7 days": 7, "Last 30 days": 30, "All time": None}
+# Filter text -> data/queries.py range name, so "Last 7 days" means the same
+# calendar days here as on the Dashboard.
+DATE_RANGES = {"Last 7 days": "last_7_days", "Last 30 days": "last_30_days", "All time": "all"}
 ACTIVITY_FILTERS = ["All activities", "Sitting", "Walking", "Standing", "Running"]
 
 # How long the session detail dialog waits for an AI summary before giving
@@ -41,10 +45,6 @@ GENERATING_TEXT = "Generating summary…"
 NOT_ENOUGH_DATA_TEXT = "Not enough data for a generated summary yet."
 
 logger = logging.getLogger("heartwatch.llm")
-
-
-def _now_ms() -> int:
-    return int(datetime.datetime.now().timestamp() * 1000)
 
 
 def _format_dt(ts_ms: int | None) -> str:
@@ -101,13 +101,12 @@ class SessionsView(QWidget):
     def refresh(self) -> None:
         clear_layout(self._content)
 
-        days = DATE_RANGES[self._date_filter.currentText()]
-        start_date = _now_ms() - days * 86_400_000 if days is not None else None
+        range_name = DATE_RANGES[self._date_filter.currentText()]
         activity = self._type_filter.currentText()
         activity_filter = None if activity == "All activities" else activity
 
-        sessions = db.list_sessions(
-            limit=100, activity_filter=activity_filter, start_date=start_date
+        sessions = queries.list_sessions(
+            limit=100, activity_filter=activity_filter, range_name=range_name
         )
 
         if not sessions:

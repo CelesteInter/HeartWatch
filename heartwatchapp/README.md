@@ -28,7 +28,215 @@ source heartwatchapp/.venv/bin/activate
 python -m heartwatchapp.main
 ```
 
-Always run from the **repo root**, not from inside `heartwatchapp/`.
+Always run from the **repo root** (`HeartWatch/`), not from inside `heartwatchapp/`.
+
+## Ask about your data
+
+The bar at the bottom of the window answers simple questions about your
+own recorded sessions, for example:
+
+- "What was my average heart rate while running this week?"
+- "How long did I walk yesterday?"
+- "Peak heart rate in my most recent session"
+- "How many sessions did I record in the last 30 days?"
+
+It can answer five numbers -- **average heart rate, peak heart rate, time
+spent in one activity (Sitting, Walking, Standing, Running), number of
+sessions, and total recorded time** -- for today, yesterday, this week
+(since Monday), last week (the previous Monday to Sunday), the last 7 days,
+the last 30 days, all sessions, or your latest session. With no time
+period it uses the last 7 days, the same as the Dashboard.
+
+It also answers two questions that aren't a single number:
+
+- **Session summary** -- "Tell me about my last session", "How did my
+  latest workout go?", "give me a recap of my last run": the same plain
+  summary the Sessions view shows for your latest finished session
+  (`format_stats_plain()`, unchanged), after a lead-in with its date and
+  start time, plus the low-confidence note when it applies. It's always
+  the latest session, whatever activity the question names, and the
+  understood line says *Session summary · latest session*.
+- **Activity breakdown** -- "What did I do today?", "breakdown of my
+  activities this week": total activity time, then each activity, most
+  time first, with its share. These are the Dashboard's numbers, order and
+  percentages (each share rounded on its own, as on the Dashboard, so they
+  can add up to 99 or 101). Asking for a summary of several sessions
+  ("summarize my activity in the last 30 days") gives the breakdown, and
+  the understood line says so.
+
+**The AI only understands; Python answers.** The question is turned into a
+small form -- which number, which activity, which time period -- and then
+Python looks the answer up with the same code the Dashboard uses
+(`data/queries.py`) and writes the sentence (`ask/answers.py`). The model
+never writes a number or a word you read. Replies read like a person
+("You walked for 2 minutes 20 seconds yesterday, in one session.") but
+say exactly the same facts; no reply judges or compares. Under every
+answer the bar shows what it understood, e.g. *Average heart rate ·
+Running · this week*, so a misunderstanding is visible straight away. If
+the activity times come from the dummy classifier it also says *"Activity
+times are from simulated predictions."*, by the same rule as the Dashboard.
+
+**Typos.** Clear typos are corrected before anything else (`ask/typos.py`,
+standard-library `difflib`): a word the bar doesn't know, of four or more
+letters, is replaced by a known word when it's at least 80% similar or one
+swap of two neighbouring letters away ("waht" -> "what"), and no other
+meaning is nearly as close. The understood line names every correction
+(*corrected: walkign → walking*). If two meanings are equally close
+("sitnding": standing or sitting) the bar asks "Did you mean standing or
+sitting?" with a button for each. Short words ("rn") are never guessed.
+
+**Health questions get a fixed reply.** Anything asking whether a number is
+healthy, normal, safe, too high, higher than usual, or what you should do
+gets the same reply and no number, even if it also names a metric. This
+check is plain code (`ask/guard.py`) and runs before either parser, on the
+question as typed and on its typo-corrected form, with its own looser
+fuzzy match on top, so "is my heart rate helthy" is refused too. A word
+that is exactly a supported word ("heart") is never read as a health word.
+
+**When it can't answer, it says why and offers questions that work.**
+Replies that can't give a number -- not supported, not understood, which
+activity, nothing recorded for that period, the AI not running, or
+something not built yet -- show up to three clickable example questions,
+chosen from what the question named (an activity, a time period).
+Clicking one asks it exactly as if typed. Every suggestion is answered by
+the keyword parser alone, so they work without Ollama. A phrase that
+could mean two activities ("on my feet") asks which, with a button for
+each; "Which activity?" offers all four. Not built yet, each with its own
+reply: comparing two periods ("this week vs last week"), follow-up
+questions ("and walking?" -- each question stands alone), and your
+longest session.
+
+How a question is understood (`HEARTWATCH_ASK_MODE`, read each time a
+question is asked):
+
+| Value | What happens |
+|---|---|
+| `hybrid` (default; also used if unset, empty, or unrecognized) | A keyword parser (`ask/rules.py`) answers simple questions instantly with no AI; only questions it isn't sure about go to the local model (`gemma3:1b` via Ollama). |
+| `rules` | Keyword parser only; Ollama is never contacted. Anything it isn't sure about gets "Sorry, I didn't catch that." with suggestions. |
+| `llm` | Every question (after the health check) goes to the model. Used by the evaluation to compare the parsers. |
+
+**Every activity or time period the AI picks must appear in the question**
+(`ask/evidence.py`), in every mode. The model sometimes copies a value
+from its prompt's examples or simply guesses ("and walking?" became
+*yesterday*; "peak heart rate in my latest session" gained *Running*), so
+an activity is kept only if the question names it or a synonym ("jog" for
+Running), and a time period only if the question has a phrase for it
+("the week before this one" counts for last week). Otherwise the activity
+is dropped (and the bar asks which one, if the question needs one) and the
+time period falls back to the last 7 days, shown as *(default)*. If the
+question names exactly one time period, that one is used whatever the
+model picked (in v1 this override applied in `hybrid` only). A summary or
+breakdown from the model is kept only if the question asks for one. The
+metric itself isn't checked -- understanding paraphrases is the model's
+job.
+
+Without Ollama, `hybrid` still answers everything the keyword parser
+understands; anything else gets a reply saying the AI model isn't running,
+with example questions that work without it. The keyword parser only
+accepts when it's sure (one metric, at most one activity and one time
+period, and no words it doesn't know); otherwise it passes the question on.
+
+**Developer tools** (off by default): with `HEARTWATCH_ASK_DEV=1` the
+understood line ends with who answered (*· rules*, *· AI*, *· guard*, or
+*· rules (corrected)*), and each question is appended as one JSON line to
+`heartwatchapp/dev_logs/ask_questions.jsonl` (gitignored): the time, the
+question as typed and corrected, the corrections, who decided, what was
+understood (the form, or the kind of reply), what the evidence check
+dropped, and how long it took. **It never records the reply or any number
+from your data.** With the setting off, nothing is written.
+
+### Evaluating the question parsers
+
+From the repo root, with Ollama running:
+
+```bash
+python -m heartwatchapp.scripts.eval_ask              # all three modes, dev questions
+python -m heartwatchapp.scripts.eval_ask --modes rules  # no Ollama needed
+```
+
+It puts every question in `heartwatchapp/eval/ask_questions_dev.jsonl`
+through the app's own pipeline in `rules`, `llm` and `hybrid` mode and
+compares the form each understood with the expected form written by hand.
+The headline number is **false accepts**: a question answered with a number
+when it should have been refused, or answered for the wrong metric,
+activity or time period. "Now" is pinned (`--now 2026-10-14T15:00 --tz
+America/Denver`, a Wednesday) and the sessions are built on a throwaway
+database from `--data-seed`, so results are reproducible; the model runs at
+temperature 0 with seed 0, and two runs give identical results apart from
+timings. If Ollama is down, `rules` still runs and the others are marked
+skipped. `--db` / `--overwrite` work as for the summaries' evaluation
+below, and the real database is never opened. Results go to
+`heartwatchapp/eval_results/ask-<YYYYMMDD-HHMMSS>/` (gitignored):
+`runs.jsonl`, `meta.json` (model digest, Ollama version, options, now,
+question file hash) and `summary.md` (a table per mode and every false
+accept).
+
+**Dev vs held-out questions.** The dev file may be used to tune the keyword
+parser and the prompt. A held-out file (e.g.
+`heartwatchapp/eval/ask_questions_heldout.jsonl`, run with `--questions
+PATH`) is written by someone who hasn't seen the parser, and **the parser
+must never be tuned against it** -- otherwise its score stops meaning
+anything.
+
+On the dev questions (October 16, 2026, experiment 3): false accepts were
+0 of 30 for `rules`, 12 of 30 for `llm` and 0 of 30 for `hybrid` (details
+in the run's `summary.md`). The model on its own mostly fails by inventing
+an activity the question never named, answering an off-topic question, or
+reading "this week" as the last 7 days. Experiments 1 and 2 reported
+better `llm` scores (8 and 10 false accepts), but those were inflated:
+several prompt examples repeated or closely paraphrased dev questions.
+Experiment 3 is the first with no prompt example near a dev question
+(`tests/test_ask_vocab.py` now enforces it), so it is the clean dev
+baseline. The held-out set remains the real measure.
+
+**v1.1 (October 20, 2026).** The same command takes a second question file,
+`heartwatchapp/eval/ask_questions_dev_v11.jsonl` (`--questions PATH`): 26
+questions with typos, medical questions with typos, the two new question
+types, "on my feet", and things not built yet. Its expected forms may also
+list the typo corrections (scored only when listed), the options of a
+clarification, or which feature isn't built; a false accept also covers
+answering instead of asking, a misspelled medical question that isn't
+refused, and a wrong correction that leads to a number. In `llm` mode
+each model reply is also scored without the evidence check (the same
+reply, not a second call), and `summary.md` puts the two side by side.
+The eval database's demo session is pinned to an hour after "now", so the
+summary's date and time are the same on every run.
+
+On the dev questions with v1.1: false accepts on the original 30 stayed at
+0 for `rules` and `hybrid` (hybrid 30/30 exact) and fell from 12 to 3 for
+`llm`; on the 26 new questions they were 0 for `rules` and `hybrid` and 2
+for `llm` (12 before the evidence check). Both runs were identical apart
+from timings.
+
+The number of sessions after an answer ("in one session", "across 3
+sessions") counts only the sessions that contributed to the number: for
+time spent running, sessions with some Running; for heart rate while
+Running, sessions with heart-rate samples during Running. It's left out
+for the latest session and for a real zero ("You didn't spend any time
+standing last week.").
+
+### Known limitations (v1.1)
+
+- One question at a time: a follow-up like "and what about walking?" gets
+  a reply asking for the whole question.
+- Text answers only -- no charts -- and no commands ("start recording").
+- Comparisons ("this week vs last week") and the longest session aren't
+  built yet; each gets its own reply with suggestions.
+- "My last run" is read as *latest session, Running*: the running part of
+  your most recent session, not your most recent session that included
+  running. For a summary ("recap of my last run") it's simply your latest
+  session.
+- In `llm` mode, comparisons, follow-ups and "longest" still go to the
+  model (the keyword parser is what recognizes them), so the AI-only
+  numbers count those as misses.
+- Counting sessions by activity ("how many running sessions") isn't
+  supported yet and gets a fixed reply (straight from the keyword parser
+  when the question says "how many / number of ... sessions").
+- Session counts on the real database are inflated by the Live Monitor
+  opening a session every time the app starts (an open item, fixed with the
+  data-source abstraction).
+- Activity answers use simulated predictions until the real classifier
+  lands (milestone 6).
 
 ## Session summaries
 
@@ -160,11 +368,8 @@ checked for which number goes with which (only the peak rule applies).
 3. To see a data-rich session, either:
    - run `python -m heartwatchapp.scripts.demo_session` (plain summary)
      or `HEARTWATCH_SUMMARY_MODE=llm python -m
-     heartwatchapp.scripts.demo_session` (AI path), which copies the
-     database to a temporary file, adds one data-rich session to the
-     copy, launches the app on the copy with the `heartwatch.llm` log at
-     DEBUG, and prints the new session's number -- the real database is
-     never written (the script refuses to run against it); or
+     heartwatchapp.scripts.demo_session` (AI path) -- see **Demo session**
+     below; or
    - click Settings -> Developer -> **Seed demo session** (this *does*
      write to your real database -- seeded sessions include dummy
      predictions, `model_version "demo-dummy"`), or leave the app running
@@ -175,10 +380,82 @@ checked for which number goes with which (only the peak rule applies).
 To point the app at any other database file, set `HEARTWATCH_DB_PATH`
 before launching; with it unset the app uses `data/heartwatch.db` as usual.
 
+### Demo session
+
+The demo script makes a separate, brand-new database with one example
+session in it, so you can see a full summary without touching anyone's
+real recordings.
+
+- **Default:** `python -m heartwatchapp.scripts.demo_session` builds a new
+  database in a temporary folder (the app's own schema from
+  `data/db.py`'s `init_db()`, plus one demo session), launches the app on
+  it with the `heartwatch.llm` log at DEBUG, and prints the new session's
+  number. The real database is never opened, copied or read.
+- `--db PATH` chooses where the demo database goes. If a file is already
+  there, the script stops (exit code 2) and leaves it alone, so a mistyped
+  path can't delete anything. Add `--overwrite` to replace it; the file and
+  any `-wal` / `-shm` / `-journal` next to it are deleted first (a leftover
+  `-wal` would otherwise be replayed into the new file). The default
+  temporary folder is always new, so it never needs `--overwrite`.
+- `--data-seed N` fixes the heart-rate values; leave it out for random
+  ones. `--no-launch` builds the database and exits.
+- `--history-days N` also adds one finished session on each of the N days
+  before today (at a random time between 7 am and 8 pm, with a random mix
+  of activities), so questions about "yesterday" or "last week" have data
+  to answer from. Off by default. The extra sessions use their own random
+  generator derived from `--data-seed`, and are written after the demo
+  session, so the demo session itself -- its number, its values, and being
+  the latest session -- is exactly the same with or without them.
+- `--from-real` starts from a copy of the real database instead of an
+  empty one, for the rare case you want real sessions alongside the demo.
+  It prints *"Close HeartWatch before using --from-real; copying while the
+  app is writing can produce an inconsistent copy."* It copies the real
+  `.db`, `-wal` and `-shm` files at the filesystem level (`shutil.copy2`)
+  and never opens the real database with SQLite in any mode; it opens only
+  the copy, runs `PRAGMA integrity_check`, and if that isn't `ok` deletes
+  the copy and exits with an error.
+- In both modes the script refuses to run (exit code 2) if the
+  destination is the real database, comparing resolved paths and, if both
+  exist, `os.path.samefile`, so symlinks, hard links and relative paths
+  can't get around it. "The real database" means what the app would open:
+  `HEARTWATCH_DB_PATH` if set, otherwise `data/heartwatch.db`.
+
 **Measured benchmark** (Dylan's MacBook Air, Apple M2, 8 GB):
 `gemma3:1b` -- 883 MB, 100% GPU-resident on Apple M2, 2048 context. Time
 to first token 0.04s; warm generation 0.11–0.94s; cold load 2.31s.
 Selected to fit an 8 GB development machine.
+
+## Where numbers come from
+
+Every number the app shows -- the Dashboard's cards, bars and donut, the
+Sessions table's Avg/Peak BPM, and the session summary -- is computed by
+one function in `data/stats.py`, and fetched through `data/queries.py`
+(`run()` with a `MetricRequest`, plus `activity_breakdown()` and the two
+session lists). **SQL may filter, order, join and `COUNT(*)` rows; it never
+does the arithmetic.** `tests/test_queries.py` scans `data/queries.py`,
+`data/db.py`, `ui/` and `ask/` and fails on `AVG(`, `SUM(`, `MAX(` or `MIN(` in SQL.
+That's what keeps the Dashboard and the summary from ever disagreeing. The
+AI bar (`ask/`, also scanned) answers through the same `run()`.
+
+- **Average heart rate** is the simple mean of the measured samples: add
+  up the readings, divide by how many. Gaps (sensor dropouts) are left
+  out, never filled in. Across several sessions the samples are pooled, so
+  every sample counts once (the same answer as SQL's `AVG(bpm)`).
+- **Time per activity** comes from the prediction window rule in
+  `stats._activity_segments()` (each prediction owns the 5 s before it),
+  worked out per session and then added up, so no window crosses from one
+  session into another.
+- **Which sessions a range covers:** a session belongs to "Today", "Last 7
+  days" or "Last 30 days" if it *started* in that range, and then all of
+  its samples count; a session that runs past midnight counts on the day it
+  started. Days are local calendar days (7 days = today plus the 6 before
+  it, from local midnight), so the Dashboard and the Sessions filter mean
+  the same thing. Sessions still recording are left out of the Dashboard
+  until they end; the Sessions table lists them.
+- **Simulated predictions:** until milestone 6 every prediction comes from
+  the dummy classifier (`model_version "demo-dummy"`). When any of the
+  breakdown's time does, the Dashboard says so under it: *"Activity times
+  are from simulated predictions."*
 
 ## Development notes
 
@@ -191,9 +468,15 @@ before touching `llm/` or the database.
 | Reuse the module-level `AsyncClient` across several `asyncio.run()` calls | Keep live-model work inside one `asyncio.run()`, and run Qt checks in a separate process. The client is tied to its event loop. |
 | Catch only `httpx.RequestError` for "Ollama down" | Catch `CONNECTION_ERRORS` (includes built-in `ConnectionError`) |
 | Check numbers as substrings in tests ("134" contains "4") | Compare digit tokens from `re.findall(r"\d+")` |
-| Open the real DB with SQLite `mode=ro` | Use copies via `HEARTWATCH_DB_PATH`. WAL mode still touches the `-shm`/`-wal` files. |
+| Open the real DB from scripts, even with `mode=ro` (it still changes `-shm`) | Build a fresh DB; if a copy is truly needed, copy the files at the filesystem level and open only the copy. |
 | Use pytest | It isn't installed. Use stdlib `unittest`. |
 | Update test expectations by copying new outputs | Recompute expected values by hand from the rule being tested |
+| Let the model's reply reach the screen, even "just the numbers" | Parse it into a form (`ask/llm_parser.py`), check it, answer with `run()` and a Python template |
+| Trust `gemma3:1b` to leave a field empty | It invents activities and answers off-topic questions; keep the keyword parser first and the health check before both |
+| Ping Ollama with a chat request to see if it's up | Use `list` (`health_check()`): a chat loads the model into memory |
+| Pass `keep_alive=-1` to keep the model warm | Use Ollama's default (5 min) and preload on focus at most once per period (`ui/ai_bar.py`) |
+| Tune the keyword parser on the held-out questions | Tune on `eval/ask_questions_dev.jsonl` only |
+| Trust an activity or time period the AI returns | Every activity or range the AI returns must appear in the question; never trust the model's guesses (`ask/evidence.py`) |
 
 **Summary mode.** `HEARTWATCH_SUMMARY_MODE=plain` (the default) shows the
 app's own summary; `llm` brings back the AI path. Plain is the default
@@ -227,6 +510,13 @@ columns to label by hand). With fixed seeds `gemma3:1b`'s replies are
 byte-identical, so running it again with the same arguments reproduces
 the same replies.
 
+`--db PATH` keeps the throwaway database somewhere you choose instead of a
+temporary folder. Like the demo script, it won't replace a file that's
+already there: it stops with exit code 2 and leaves the file alone unless
+you add `--overwrite`, which deletes that file (and any `-wal` / `-shm` /
+`-journal` next to it) before building. The default temporary folder is
+always new, so it never needs `--overwrite`.
+
 **Ollama facts.** Ollama runs from the macOS menu-bar app. It unloads the
 model after 5 idle minutes by default, so the first request after that
 takes about 3 s instead of about 1 s.
@@ -241,7 +531,7 @@ relaunch.
 ```
 heartwatchapp/
 ├── main.py              app entry point
-├── config.py            environment-variable settings (HEARTWATCH_DB_PATH, HEARTWATCH_SUMMARY_MODE)
+├── config.py            environment-variable settings (HEARTWATCH_DB_PATH, HEARTWATCH_SUMMARY_MODE, HEARTWATCH_ASK_MODE, HEARTWATCH_ASK_DEV)
 ├── ui/
 │   ├── main_window.py   QMainWindow shell (sidebar · topbar · stack · AI bar)
 │   ├── sidebar.py       64px icon-only nav (QToolButton + QButtonGroup)
@@ -249,32 +539,60 @@ heartwatchapp/
 │   ├── theme.py         design tokens + QSS (light/dark, no scattered hex)
 │   ├── widgets.py       Card, MetricCard, Badge, Divider, PlaceholderState
 │   ├── charts.py        Matplotlib DonutChart + scrolling LiveHRChart
-│   ├── dashboard.py     Section 1 — metric cards, activity breakdown, sessions
+│   ├── dashboard.py     Section 1 — metric cards, activity breakdown, sessions (all via data/queries.py)
 │   ├── live_monitor.py  Section 2 — live HR + activity badge + IMU axes
 │   ├── sessions.py      Section 3 — sessions list + SessionDetailDialog (chart, summary)
 │   ├── ml_view.py       Section 4 — stub (pipeline summary + matrix placeholder)
 │   ├── settings.py      Section 5 — stub (placeholder controls, theme toggle)
-│   └── ai_bar.py        always-visible data-query bar (layout only)
+│   ├── ai_bar.py        "Ask about your data" bar (rules answers at once; AI answers via LlmWorker)
+│   └── pending_request.py  waits for one background reply at a time, with a timeout
 ├── data/
-│   ├── db.py            SQLite connection + schema + query stubs
-│   └── stats.py         session-summary number crunching (no LLM code)
+│   ├── db.py            SQLite connection + schema + writes and plain row reads
+│   ├── queries.py       the one query layer: MetricRequest, run(), ranges, breakdown, session lists
+│   └── stats.py         every metric (average/peak HR, time per activity, totals) + session summaries
+├── ask/                 the AI bar's question pipeline (no Qt)
+│   ├── vocab.py         metrics, activities, ranges and synonyms -- one source
+│   ├── typos.py         typo correction (difflib), before everything else
+│   ├── guard.py         health/advice check, before any parser (typos too)
+│   ├── rules.py         keyword parser
+│   ├── llm_parser.py    JSON schema + checks for the model's form
+│   ├── evidence.py      drops any activity/range/intent the question doesn't back
+│   ├── parse_result.py  ParseResult, shared by both parsers
+│   ├── pipeline.py      typos -> guard -> rules -> (AI -> evidence) -> normalize -> run -> answer
+│   ├── answers.py       every sentence the bar shows
+│   ├── suggest.py       clickable example questions (all answerable without the AI)
+│   └── devlog.py        HEARTWATCH_ASK_DEV marker and local question log
+├── eval/
+│   └── ask_questions_dev.jsonl  dev questions for scripts/eval_ask.py
 ├── llm/
-│   ├── client.py        the only module that imports `ollama`
-│   ├── prompts.py       system prompt + session-summary prompt text
+│   ├── client.py        the only app module that imports `ollama`
+│   ├── prompts.py       system prompts + session-summary and question-parser prompt text
 │   ├── validate.py      checks every generated summary before it's shown
 │   └── worker.py        Qt-thread bridge (sends checked replies to the GUI)
 ├── ml/inference.py      TFLite activity classifier stub
 ├── scripts/
 │   ├── benchmark_ollama.py  standalone viability check, run by hand
-│   ├── demo_db.py           builds the demo session on a DB copy (shared by the two below)
-│   ├── demo_session.py      launch the app on a DB copy with a data-rich demo session
-│   └── eval_summaries.py    repeatable AI-summary evaluation (writes eval_results/)
+│   ├── demo_db.py           builds the demo session on a fresh DB (shared by the two below)
+│   ├── demo_session.py      launch the app on a fresh demo DB with a data-rich session
+│   ├── eval_summaries.py    repeatable AI-summary evaluation (writes eval_results/)
+│   └── eval_ask.py          repeatable ask-bar parser evaluation (writes eval_results/ask-*)
 └── tests/
     ├── test_stats.py          unit tests for data/stats.py (no live Ollama needed)
     ├── test_validate.py       unit tests for llm/validate.py (no live Ollama needed)
     ├── test_demo_session.py   demo tooling: real-DB guard, demo facts, seeded predictions
+    ├── test_demo_db_fresh.py  demo DB never touches the real DB's files (fake real DB, live WAL)
     ├── test_summary_mode.py   HEARTWATCH_SUMMARY_MODE and the dialog's two paths
-    └── test_eval_summaries.py eval script's pure parts (no live Ollama needed)
+    ├── test_queries.py        query layer + metric functions, ranges, no-SQL-arithmetic guard
+    ├── test_dashboard_view.py Dashboard widget offscreen: cards match run(), caption, empty states
+    ├── test_eval_summaries.py eval script's pure parts (no live Ollama needed)
+    ├── test_ask_vocab.py      one source of words; guard never blocks a supported phrase
+    ├── test_ask_rules.py      keyword parser: accepts, deferrals, unsupported
+    ├── test_ask_pipeline.py   metric x activity table, modes, range override, AI parser (mocked)
+    ├── test_ask_answers.py    every answer template and fixed reply; numbers and words checked
+    ├── test_ask_v11.py        typos, guard with typos, evidence check, summary, breakdown, suggestions
+    ├── test_ask_regressions.py  the v1 wrong answers (each failed on ask-v1)
+    ├── test_eval_ask.py       ask eval: real-DB refusal, scoring, rules-mode run
+    └── test_ai_bar.py         AI bar offscreen: answers, stale replies, timeout, preload
 ```
 
 ## Build status
@@ -284,10 +602,11 @@ heartwatchapp/
 | 1 | App shell (window, sidebar, topbar, stack, AI bar) | done |
 | 2 | Dashboard — cards / bars / donut / sessions (demo data) | done |
 | 3 | Live Monitor — dummy sine HR + IMU axes; also writes dummy activity predictions (`model_version "demo-dummy"`) until milestone 6 | done |
-| 4 | AI bar wired to Anthropic API | layout only |
-| 5 | SQLite integration (replace demo data) | partial — Sessions, `DatabaseWriter`, and `data/stats.py` use SQLite; the Dashboard still uses hardcoded demo data |
+| 4 | "Ask about your data" bar — keyword parser + local model (gemma3:1b) fill a form; Python answers via `data/queries.py` | done (v1.1: typos, session summary, activity breakdown, evidence check, suggestions; see Known limitations) |
+| 5 | SQLite integration (replace demo data) | done for the Dashboard, Sessions and the AI bar (all through `data/queries.py`); the Live Monitor still streams dummy data |
 | 6 | BLE stream from ESP32-S3 + real TFLite inference | not started |
 | — | Session summaries | done — plain (Python-written) by default; AI phrasing via Ollama / gemma3:1b with `HEARTWATCH_SUMMARY_MODE=llm`, degrades to the plain summary otherwise |
 
-All Dashboard / Live Monitor values are hardcoded demo data or dummy generators
-until step 5–6.
+The Dashboard, Sessions and AI bar read the SQLite database. The Live Monitor's
+values come from dummy generators until step 6, and every activity prediction
+is from the dummy classifier (`model_version "demo-dummy"`) until then.

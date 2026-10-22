@@ -34,7 +34,7 @@ One row per recording run.
 | `id` | INTEGER PK | Session id. Everything else references this. |
 | `started_at` | INTEGER | Epoch milliseconds when the session began. |
 | `ended_at` | INTEGER, nullable | Epoch milliseconds when it ended. **NULL means the session is still live** — that's how the app tells a recording session apart from a finished one, rather than a separate boolean flag. |
-| `device_id` | TEXT | BLE address of the watch, or `'demo'` for the Live Monitor's generator, or `'seed'` for a synthetic session created from the developer panel. |
+| `device_id` | TEXT | BLE address of the watch, or `'demo'` for the Live Monitor's generator, or `'seed'` for a synthetic session created from the developer panel, or `'demo-session'` for the session `scripts/demo_session.py` builds. |
 | `label` | TEXT | Activity label: walking / running / idle / etc. Nullable — a live session doesn't know its label yet. |
 | `accel_scale` | REAL | Multiply a raw `imu_samples.ax/ay/az` count by this to get g-force. |
 | `gyro_scale` | REAL | Multiply a raw `imu_samples.gx/gy/gz` count by this to get degrees/second. |
@@ -134,6 +134,27 @@ Anywhere a human needs to read a timestamp (the developer panel, the
 Sessions list), formatting to a readable date happens at display time in
 Python, or — for the `samples_flat` view specifically — via SQLite's
 `datetime()` function. The stored value itself is never a string.
+
+## Which sessions a time range covers
+
+The Dashboard and the Sessions filter ask for data by range ("Today",
+"Last 7 days", "Last 30 days", "All time"), resolved by
+`data/queries.py`'s `resolve_range()`:
+
+- A range is half-open, `[start, end)`, in epoch milliseconds. "Today"
+  starts at local midnight; "Last 7 days" is today plus the 6 calendar days
+  before it, starting at local midnight 6 days ago. Both end at "now".
+  Days are calendar days in the system's local timezone (via `zoneinfo`),
+  so a 23- or 25-hour daylight-saving day is still one day.
+- **A session belongs to a range if its `started_at` falls in it**, and
+  then all of its samples count. A session that crosses midnight counts on
+  the day it started; one that starts at exactly midnight belongs to the
+  new day.
+- Sessions still recording (`ended_at IS NULL`) are left out of every
+  Dashboard number until they end. The Sessions table lists them.
+
+SQL only selects the rows; every number is computed in `data/stats.py`
+(see the README's "Where numbers come from").
 
 ## The `samples_flat` view, and why it exists
 

@@ -17,6 +17,7 @@ never has to (and never gets the chance to) invent one.
 from __future__ import annotations
 
 import time
+from collections.abc import Iterable
 from pathlib import Path
 
 from ..ml.inference import CLASSES
@@ -75,25 +76,18 @@ def compute_session_stats(session_id: int, path: str | Path = db.DB_PATH) -> dic
     ended_at = session["ended_at"]
     now_ms = int(time.time() * 1000)
     session_end_ms = ended_at if ended_at is not None else now_ms
-    duration_s = max(0, session_end_ms - started_at) / 1000
+    duration_s = session_duration_s(started_at, session_end_ms)
 
     hr = timeline["hr"]
-    hr_values = [bpm for _, bpm in hr]
-    avg_hr = sum(hr_values) / len(hr_values) if hr_values else None
-    max_hr = max(hr_values) if hr_values else None
+    avg_hr = average_hr(hr)
+    peak = peak_hr(hr)
+    max_hr = peak[0] if peak is not None else None
 
     predictions = timeline["predictions"]
     segments = _activity_segments(predictions, started_at, session_end_ms)
-    activity_seconds: dict[str, float] = {}
-    for start_ms, end_ms, label in segments:
-        if label is not None:
-            activity_seconds[label] = activity_seconds.get(label, 0.0) + (end_ms - start_ms) / 1000
+    activity_seconds = _seconds_by_label(segments)
 
-    peak_hr_activity = None
-    if hr:
-        # The first sample that hit the peak, if the peak value repeats.
-        peak_ts = next(ts for ts, bpm in hr if bpm == max_hr)
-        peak_hr_activity = _activity_at(segments, peak_ts)
+    peak_hr_activity = _activity_at(segments, peak[1]) if peak is not None else None
 
     low_confidence_count = sum(
         1 for _, _, confidence in predictions if confidence < LOW_CONFIDENCE_THRESHOLD
@@ -105,12 +99,114 @@ def compute_session_stats(session_id: int, path: str | Path = db.DB_PATH) -> dic
         "duration_s": duration_s,
         "avg_hr": avg_hr,
         "max_hr": max_hr,
-        "hr_sample_count": len(hr_values),
+        "hr_sample_count": len(hr),
         "activity_seconds": activity_seconds,
         "peak_hr_activity": peak_hr_activity,
         "prediction_count": len(predictions),
         "low_confidence_count": low_confidence_count,
     }
+
+
+# --- metric functions -------------------------------------------------
+#
+# Every number the user reads -- in the session summary, on the Dashboard,
+# in the Sessions table, and later from the AI bar -- is worked out by one
+# of these functions, and only here. data/queries.py fetches the rows and
+# hands them over; SQL never does the arithmetic. Pure functions: no
+# database access, so they're easy to test on hand-built rows.
+
+
+def average_hr(samples: Iterable[tuple[int, int]]) -> float | None:
+    """Average heart rate in bpm, from (ts, bpm) samples. None if there are
+    no samples.
+
+    The rule: the simple mean of the measured samples -- add up every bpm
+    reading and divide by how many there are.
+
+    - Only measured samples count. A gap in the readings (a sensor
+      dropout, say) is left out: it is never filled in, and the samples on
+      either side of it don't count for any longer because of it.
+    - Across several sessions, the samples are pooled: every sample counts
+      once, whichever session it came from, so a long session weighs more
+      than a short one. That's the same answer SQL's AVG(bpm) gives over
+      the same rows."""
+    values = [bpm for _, bpm in samples]
+    return sum(values) / len(values) if values else None
+
+
+def peak_hr(samples: Iterable[tuple[int, int]]) -> tuple[int, int] | None:
+    """(bpm, ts) of the highest heart-rate sample, or None if there are no
+    samples. If the peak value repeats, the earliest sample that hit it."""
+    peak = None
+    for ts, bpm in samples:
+        if peak is None or bpm > peak[0]:
+            peak = (bpm, ts)
+    return peak
+
+
+def time_per_activity(
+    predictions: list[tuple[int, str, float]], session_start_ms: int, session_end_ms: int
+) -> dict[str, float]:
+    """{label: seconds} for one session, in the order each activity first
+    appeared; empty if no time is credited to any activity. Built on
+    _activity_segments(), the one implementation of the prediction window
+    rule. Takes the session's start as well as its end, because the rule
+    clips every window to the session."""
+    return _seconds_by_label(_activity_segments(predictions, session_start_ms, session_end_ms))
+
+
+def hr_samples_during(
+    samples: Iterable[tuple[int, int]],
+    predictions: list[tuple[int, str, float]],
+    session_start_ms: int,
+    session_end_ms: int,
+    activity: str,
+) -> list[tuple[int, int]]:
+    """One session's (ts, bpm) samples that fall in time credited to
+    `activity` (same pieces as time_per_activity(), start inclusive, end
+    exclusive)."""
+    segments = _activity_segments(predictions, session_start_ms, session_end_ms)
+    return [(ts, bpm) for ts, bpm in samples if _activity_at(segments, ts) == activity]
+
+
+def combine_activity_seconds(per_session: Iterable[dict[str, float]]) -> dict[str, float]:
+    """Adds up several sessions' time_per_activity() results. Each session
+    is worked out on its own first, so no prediction window ever reaches
+    across from one session into another. Pass sessions oldest first: the
+    combined dict keeps first-appearance order, which ordered_activities()
+    uses to break ties."""
+    combined: dict[str, float] = {}
+    for activity_seconds in per_session:
+        for label, seconds in activity_seconds.items():
+            combined[label] = combined.get(label, 0.0) + seconds
+    return combined
+
+
+def session_duration_s(started_at_ms: int, ended_at_ms: int) -> float:
+    """A session's length in seconds (never negative)."""
+    return max(0, ended_at_ms - started_at_ms) / 1000
+
+
+def session_count(sessions: Iterable[tuple[int, int]]) -> int:
+    """How many sessions there are, from (started_at_ms, ended_at_ms) pairs."""
+    return sum(1 for _ in sessions)
+
+
+def total_recorded_seconds(sessions: Iterable[tuple[int, int]]) -> float:
+    """Total recorded time in seconds over (started_at_ms, ended_at_ms)
+    pairs: each session's full length, whether or not any of it was
+    credited to an activity."""
+    return sum(session_duration_s(start, end) for start, end in sessions)
+
+
+def _seconds_by_label(segments: list[tuple[int, int, str | None]]) -> dict[str, float]:
+    """{label: seconds} from _activity_segments() pieces, skipping unlabeled
+    ones, in the order each label first appears."""
+    activity_seconds: dict[str, float] = {}
+    for start_ms, end_ms, label in segments:
+        if label is not None:
+            activity_seconds[label] = activity_seconds.get(label, 0.0) + (end_ms - start_ms) / 1000
+    return activity_seconds
 
 
 def _canonical_label(label: str | None) -> str | None:

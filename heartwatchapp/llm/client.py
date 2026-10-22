@@ -17,7 +17,9 @@ headroom on the target machine.
 What this model is (and is not) for: it phrases numbers Python has already
 computed. It never does arithmetic on sensor data and never overrides the
 activity classifier. See llm/prompts.py's SYSTEM_PROMPT for the rule as
-stated to the model itself.
+stated to the model itself. For the "Ask about your data" bar it does even
+less: it only fills in a small JSON form (which metric, activity and range)
+that Python then checks and answers -- see ask/llm_parser.py.
 """
 
 from __future__ import annotations
@@ -35,6 +37,14 @@ MODEL_OPTIONS = {"num_ctx": 2048}
 # want when all it should do is restate numbers. Same num_ctx as above;
 # MODEL_OPTIONS itself is left alone for any other caller.
 SUMMARY_OPTIONS = {**MODEL_OPTIONS, "temperature": 0.2}
+# Options for the AI bar's question parser: temperature 0 and a fixed seed,
+# so the same question always gets the same form back (the evaluation in
+# scripts/eval_ask.py depends on that).
+ASK_OPTIONS = {**MODEL_OPTIONS, "temperature": 0, "seed": 0}
+# We never pass keep_alive, so Ollama keeps the model loaded for its own
+# default of 5 minutes after the last request. The AI bar's preload uses
+# this to send at most one preload per period.
+DEFAULT_KEEP_ALIVE_S = 300
 
 # One shared client for the app's lifetime, not one per call -- mirrors how
 # data/writer.py keeps a single SQLite connection alive instead of opening
@@ -63,6 +73,10 @@ class HealthStatus:
 # package (0.6.x) wraps connection failures in Python's built-in
 # ConnectionError; older versions let httpx's RequestError through.
 CONNECTION_ERRORS = (ConnectionError, httpx.RequestError)
+# Everything that means "Ollama couldn't answer": unreachable, or an error
+# from Ollama itself (e.g. the model isn't pulled). For callers outside
+# llm/ that shouldn't import `ollama` themselves.
+LLM_ERRORS = (*CONNECTION_ERRORS, ollama.ResponseError)
 
 
 # The three statuses the topbar's AI pill can show. Built in one place so
@@ -136,29 +150,43 @@ async def stream_chat(messages: list[dict]) -> AsyncIterator[str]:
             yield content
 
 
-async def chat(messages: list[dict], options: dict | None = None) -> str:
+async def chat(
+    messages: list[dict], options: dict | None = None, format: dict | None = None
+) -> str:
     """Like stream_chat, but waits for the whole reply and hands it back as
     one string. This is what session summaries use: the reply has to be
     checked (llm/validate.py) before any of it is shown, so there's no
     point displaying it piece by piece.
 
     `options` defaults to MODEL_OPTIONS; summaries pass SUMMARY_OPTIONS.
+    `format` is a JSON schema for structured output (the AI bar's parser
+    passes one); None, the default, means plain text, as for summaries.
     Raises the same errors as stream_chat."""
-    response = await chat_response(messages, options)
+    response = await chat_response(messages, options, format)
     return response.message.content or ""
 
 
-async def chat_response(messages: list[dict], options: dict | None = None) -> ollama.ChatResponse:
+async def chat_response(
+    messages: list[dict], options: dict | None = None, format: dict | None = None
+) -> ollama.ChatResponse:
     """chat(), but returns Ollama's whole response object instead of just
     the text -- including its timings (load_duration, eval_duration, in
-    nanoseconds). Only scripts/eval_summaries.py needs those; the app calls
-    chat()."""
+    nanoseconds). Only the eval scripts need those; the app calls chat()."""
     return await _client.chat(
         model=MODEL_NAME,
         messages=messages,
         stream=False,
         options=options if options is not None else MODEL_OPTIONS,
+        format=format,
     )
+
+
+async def preload() -> None:
+    """Asks Ollama to load gemma3:1b into memory without generating
+    anything (a chat with no messages), so the first real question doesn't
+    pay the load time. Uses Ollama's default keep-alive -- the model is
+    never pinned in memory. Raises the same errors as chat()."""
+    await _client.chat(model=MODEL_NAME, messages=[], options=MODEL_OPTIONS)
 
 
 async def server_info() -> dict:

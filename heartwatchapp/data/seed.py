@@ -11,6 +11,8 @@ from __future__ import annotations
 import math
 import random
 
+from .stats import PREDICTION_WINDOW_MS
+
 ACTIVITY_LABELS = ["Sitting", "Walking", "Standing", "Running"]
 
 # Same shape as Live Monitor's IMU_AXES ranges (ui/live_monitor.py), so seeded
@@ -28,7 +30,8 @@ _RAW_COUNT_SCALE = 1000  # spreads the -2..2 / -250..250 walk into non-degenerat
 # Live Monitor's live demo session and DatabaseWriter.seed_demo_session;
 # rows are tagged DUMMY_MODEL_VERSION so they're easy to find and delete.
 # Remove along with the other dummy generators in milestone 6.
-PREDICTION_WINDOW_MS = 5000
+# PREDICTION_WINDOW_MS comes from data/stats.py, so the dummy classifier
+# writes windows exactly as long as the ones stats.py credits.
 ACTIVITY_SWITCH_CHANCE = 0.15
 DUMMY_CONFIDENCE_RANGE = (0.55, 0.98)
 DUMMY_MODEL_VERSION = "demo-dummy"

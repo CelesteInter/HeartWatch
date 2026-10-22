@@ -3,13 +3,13 @@
 PySide6>=6.6
 matplotlib>=3.8
 
-# Local LLM session summaries (build steps 2–5) — runs on-device via the
-# Ollama app; the app degrades gracefully if Ollama isn't installed/running.
-ollama>=0.6
+# Local LLM (session summaries and the "Ask about your data" bar) — runs
+# on-device via the Ollama app; the app degrades gracefully if Ollama isn't
+# installed/running. Pinned: the client's error types changed between 0.x
+# releases (see llm/client.py's CONNECTION_ERRORS).
+ollama==0.6.2
 
-# Installed now, used in later build steps:
-#   step 4 — AI assistant bar
-anthropic>=0.39
+# Not imported yet; installed for planned steps:
 #   step 6 — BLE stream from XIAO ESP32-S3
 bleak>=0.22
 #   Plotly for offline/historical session charts

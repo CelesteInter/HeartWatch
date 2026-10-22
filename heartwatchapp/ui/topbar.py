@@ -82,12 +82,19 @@ class Topbar(QWidget):
     def set_connection(self, connected: bool, name: str = "") -> None:
         self.conn_pill.setText(f"Connected · {name}" if connected else "Disconnected")
 
-    def set_ai_status(self, ready: bool, message: str) -> None:
+    def set_ai_status(self, ready: bool, message: str, daemon_reachable: bool = False) -> None:
         """Called at startup with the result of llm.client.health_check(),
-        and again after each AI summary request -- "unavailable" if Ollama
-        couldn't be reached or the model is missing, "ready" once a request
+        again by the periodic health ping (ui/main_window.py), and after each
+        AI request -- "unavailable" if Ollama couldn't be reached, "model
+        missing" if it's running without gemma3:1b, "ready" once a request
         gets an answer (see LlmWorker.health_checked). Never blocks, never
         pops a dialog -- just updates this pill. The full message (what to
         install or run) is in the tooltip so it doesn't crowd the topbar."""
-        self.ai_pill.setText("AI: ready" if ready else "AI: unavailable")
+        if ready:
+            text = "AI: ready"
+        elif daemon_reachable:
+            text = "AI: model missing"
+        else:
+            text = "AI: unavailable"
+        self.ai_pill.setText(text)
         self.ai_pill.setToolTip(message)

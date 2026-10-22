@@ -1,21 +1,27 @@
-"""Try the session summaries on a throwaway copy of the database.
+"""Try the session summaries on a throwaway demo database.
 
 Plain-language overview: real recorded sessions don't have activity
 predictions yet (the classifier arrives in milestone 6), so their summaries
-have little to say. This script makes a copy of the real database, adds one
-data-rich synthetic session to the COPY -- about 6 minutes, 1 heart-rate
-sample per second, four activities, a few low-confidence predictions (see
-scripts/demo_db.py) -- and launches the real app pointed at the copy, with
-the summary log ("heartwatch.llm") turned up to DEBUG so every AI pass and
-rejection prints in the terminal. The real database is only ever read,
-never written.
+have little to say. This script builds a brand-new database holding one
+data-rich synthetic session -- about 6 minutes, 1 heart-rate sample per
+second, four activities, a few low-confidence predictions (see
+scripts/demo_db.py) -- and launches the real app pointed at it, with the
+summary log ("heartwatch.llm") turned up to DEBUG so every AI pass and
+rejection prints in the terminal. By default the real database is never
+opened, copied or read.
 
 Run from the repo root, with the venv active:
 
-    python -m heartwatchapp.scripts.demo_session             # temp copy
-    python -m heartwatchapp.scripts.demo_session --db x.db   # reuse/choose a copy
-    python -m heartwatchapp.scripts.demo_session --no-launch # just build the copy
+    python -m heartwatchapp.scripts.demo_session             # new temp demo DB
+    python -m heartwatchapp.scripts.demo_session --db x.db   # choose where (must not exist yet)
+    python -m heartwatchapp.scripts.demo_session --db x.db --overwrite  # replace x.db
+    python -m heartwatchapp.scripts.demo_session --no-launch # just build the demo DB
+    python -m heartwatchapp.scripts.demo_session --from-real # start from a copy of the real DB
     HEARTWATCH_SUMMARY_MODE=llm python -m heartwatchapp.scripts.demo_session  # AI path
+
+--from-real copies the real database's files (.db, -wal, -shm) at the file
+level and only ever opens the copy; close HeartWatch first, since copying
+while the app is writing can produce an inconsistent copy.
 
 Then open Sessions, set the filter to "All time" if needed, and
 double-click the session number the script prints.
@@ -40,10 +46,15 @@ if __package__ in (None, ""):
 # config.py and demo_db.py import nothing that fixes the database path.
 from heartwatchapp.config import DB_PATH_ENV_VAR  # noqa: E402
 from heartwatchapp.scripts.demo_db import (  # noqa: E402,F401 - re-exported for tests
+    FROM_REAL_WARNING,
     REAL_DB_PATH,
+    DemoDbError,
+    DestinationExistsError,
     RealDatabaseError,
     build_demo_db,
+    check_destination,
     ensure_not_real_db,
+    real_db_path,
 )
 
 
@@ -51,8 +62,19 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
         "--db",
-        help="database file to use (created as a copy of the real one if it "
-        "doesn't exist yet). Default: a new temporary copy.",
+        help="demo database file to build; refused if it already exists, unless "
+        "--overwrite is given. Default: a new temporary file.",
+    )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="let --db replace an existing file (and its -wal/-shm/-journal)",
+    )
+    parser.add_argument(
+        "--from-real",
+        action="store_true",
+        help="start from a file-level copy of the real database instead of an "
+        "empty one (close HeartWatch first)",
     )
     parser.add_argument(
         "--no-launch", action="store_true", help="build the demo database, then exit"
@@ -63,19 +85,34 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="fix the demo session's random heart-rate values (default: random)",
     )
+    parser.add_argument(
+        "--history-days",
+        type=int,
+        default=0,
+        metavar="N",
+        help="also add one finished session on each of the N days before today, so "
+        "questions about yesterday or last week have data (default: 0, none)",
+    )
     args = parser.parse_args(argv)
+    if args.history_days < 0:
+        parser.error("--history-days can't be negative")
 
+    # Work out the real database's path BEFORE pointing HEARTWATCH_DB_PATH
+    # at the demo file below. Only the path -- the file isn't opened.
+    real = real_db_path()
     if args.db:
         target = Path(args.db)
     else:
         target = Path(tempfile.mkdtemp(prefix="heartwatch-demo-")) / "heartwatch_demo.db"
     try:
-        target = ensure_not_real_db(target)
-    except RealDatabaseError as exc:
+        # The default temporary folder is brand new, so only a --db path
+        # can already be taken.
+        target = check_destination(target, args.overwrite or not args.db, real)
+    except (RealDatabaseError, DestinationExistsError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
-    # Point the whole app at the copy BEFORE importing any of it.
+    # Point the whole app at the demo file BEFORE importing any of it.
     os.environ[DB_PATH_ENV_VAR] = str(target)
 
     # DEBUG for the AI summary log so passes print too, not just rejections.
@@ -93,8 +130,22 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
-    target, session_id = build_demo_db(target, data_seed=args.data_seed)
+    if args.from_real:
+        print(FROM_REAL_WARNING, file=sys.stderr, flush=True)
+    try:
+        target, session_id = build_demo_db(
+            target, from_real=args.from_real, data_seed=args.data_seed, real=real,
+            history_days=args.history_days,
+        )
+    except RealDatabaseError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    except DemoDbError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
     print(f"\n>>> Demo session #{session_id} added to {target}")
+    if args.history_days:
+        print(f">>> Plus one earlier session on each of the {args.history_days} days before today.")
     print(">>> Open Sessions and double-click it to see its summary.\n", flush=True)
 
     if args.no_launch:

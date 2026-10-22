@@ -1,0 +1,30 @@
+{"id": "q01", "category": "straightforward", "question": "What was my average heart rate this week?", "expected": {"outcome": "query", "metric": "avg_hr", "activity": null, "range": "this_week"}}
+{"id": "q02", "category": "straightforward", "question": "Peak heart rate last week", "expected": {"outcome": "query", "metric": "peak_hr", "activity": null, "range": "last_week"}}
+{"id": "q03", "category": "straightforward", "question": "How long did I walk yesterday?", "expected": {"outcome": "query", "metric": "time_in_activity", "activity": "Walking", "range": "yesterday"}}
+{"id": "q04", "category": "straightforward", "question": "How many sessions did I record in the last 30 days?", "expected": {"outcome": "query", "metric": "session_count", "activity": null, "range": "last_30_days"}}
+{"id": "q05", "category": "straightforward", "question": "Total recorded time today", "expected": {"outcome": "query", "metric": "total_time", "activity": null, "range": "today"}}
+{"id": "q06", "category": "straightforward", "question": "What was my average heart rate while running in my latest session?", "expected": {"outcome": "query", "metric": "avg_hr", "activity": "Running", "range": "latest_session"}}
+{"id": "q07", "category": "paraphrased", "question": "Can you tell me my mean pulse over the past seven days?", "expected": {"outcome": "query", "metric": "avg_hr", "activity": null, "range": "last_7_days"}}
+{"id": "q08", "category": "paraphrased", "question": "What's the highest my heart rate got this week?", "expected": {"outcome": "query", "metric": "peak_hr", "activity": null, "range": "this_week"}}
+{"id": "q09", "category": "paraphrased", "question": "How much of yesterday did I spend on my feet walking around?", "expected": {"outcome": "query", "metric": "time_in_activity", "activity": "Walking", "range": "yesterday"}}
+{"id": "q10", "category": "paraphrased", "question": "How many walking sessions did I have last week?", "expected": {"outcome": "session_count_by_activity"}}
+{"id": "q11", "category": "paraphrased", "question": "How many minutes of standing did I log last week?", "expected": {"outcome": "query", "metric": "time_in_activity", "activity": "Standing", "range": "last_week"}}
+{"id": "q12", "category": "paraphrased", "question": "How much time did I spend yesterday?", "expected": {"outcome": "needs_activity"}}
+{"id": "q13", "category": "activity_synonyms", "question": "How long did I jog this week?", "expected": {"outcome": "query", "metric": "time_in_activity", "activity": "Running", "range": "this_week"}}
+{"id": "q14", "category": "activity_synonyms", "question": "Average bpm while seated yesterday", "expected": {"outcome": "query", "metric": "avg_hr", "activity": "Sitting", "range": "yesterday"}}
+{"id": "q15", "category": "activity_synonyms", "question": "How much time did I spend strolling in the last 7 days?", "expected": {"outcome": "query", "metric": "time_in_activity", "activity": "Walking", "range": "last_7_days"}}
+{"id": "q16", "category": "activity_synonyms", "question": "What was my top heart rate while I was standing today?", "expected": {"outcome": "query", "metric": "peak_hr", "activity": "Standing", "range": "today"}}
+{"id": "q17", "category": "activity_synonyms", "question": "Total time jogging across all sessions", "expected": {"outcome": "query", "metric": "time_in_activity", "activity": "Running", "range": "all"}}
+{"id": "q18", "category": "relative_dates", "question": "Average heart rate so far this week", "expected": {"outcome": "query", "metric": "avg_hr", "activity": null, "range": "this_week"}}
+{"id": "q19", "category": "relative_dates", "question": "What was my average heart rate last week?", "expected": {"outcome": "query", "metric": "avg_hr", "activity": null, "range": "last_week"}}
+{"id": "q20", "category": "relative_dates", "question": "How many sessions did I have yesterday?", "expected": {"outcome": "query", "metric": "session_count", "activity": null, "range": "yesterday"}}
+{"id": "q21", "category": "relative_dates", "question": "Peak heart rate in my most recent session", "expected": {"outcome": "query", "metric": "peak_hr", "activity": null, "range": "latest_session"}}
+{"id": "q22", "category": "relative_dates", "question": "How long did I walk in the past week?", "expected": {"outcome": "query", "metric": "time_in_activity", "activity": "Walking", "range": "last_7_days"}}
+{"id": "q23", "category": "unsupported", "question": "What's the weather like today?", "expected": {"outcome": "unsupported"}}
+{"id": "q24", "category": "unsupported", "question": "Start recording a new session", "expected": {"outcome": "unsupported"}}
+{"id": "q25", "category": "unsupported", "question": "What was my step count yesterday?", "expected": {"outcome": "unsupported"}}
+{"id": "q26", "category": "unsupported", "question": "Show me a chart of my heart rate this week", "expected": {"outcome": "unsupported"}}
+{"id": "q27", "category": "medical", "question": "Is my heart rate healthy?", "expected": {"outcome": "medical"}}
+{"id": "q28", "category": "medical", "question": "Is that higher than usual?", "expected": {"outcome": "medical"}}
+{"id": "q29", "category": "medical", "question": "Should I be worried about my peak heart rate yesterday?", "expected": {"outcome": "medical"}}
+{"id": "q30", "category": "medical", "question": "Was my average heart rate too high while running?", "expected": {"outcome": "medical"}}
