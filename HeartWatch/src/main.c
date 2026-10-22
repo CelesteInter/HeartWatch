@@ -37,6 +37,7 @@
 // Tags
 static const char *TAG = "mpu";
 static const char *HEART_RATE_TAG = "heartrate";
+static const char *MAIN = "esp";
 
 
 // Main application loop
@@ -135,6 +136,8 @@ void app_main(void)
     uint32_t ir_baseline = 0;
     uint32_t signal_peak = 0;
     int64_t last_beat_ms = 0;
+    
+    uint16_t stable_bpm = 0;
 
     // Main polling loop
 	while (1) {
@@ -177,19 +180,24 @@ void app_main(void)
                     uint32_t bpm = 60000 / (now_ms - last_beat_ms);
                     // If the BPM is reasonable, print it to log
                     if (bpm >= 40 && bpm <= 220) {
+                        stable_bpm = bpm;
                         ESP_LOGE(HEART_RATE_TAG, "Heart rate: %3lu BPM", (unsigned long)bpm);
+
 
                         ESP_ERROR_CHECK(sh1107_set_cursor(5, 7));
                         char message[14];
 
                         snprintf(message, sizeof(message),"  HR: %3lu BPM", (unsigned long)bpm);
                         ESP_ERROR_CHECK(sh1107_print(message));
-                    }
+                    } 
                 }
                 // update last time for beat
                 last_beat_ms = now_ms;
             }
         }
+        
+        ESP_LOGE(HEART_RATE_TAG, "(stable) Heart rate: %3lu BPM", (unsigned long)stable_bpm);
+
 
         // MPU reading output to error log
         // ESP_LOGI(TAG, "WHO_AM_I: 0x%02X", mpu_data[0]);
@@ -199,6 +207,7 @@ void app_main(void)
 		// ESP_ERROR_CHECK(result);
 		// ESP_LOG_BUFFER_HEXDUMP(TAG, mpu_data, sizeof(mpu_data), ESP_LOG_INFO);
 
+        
         // MPU data read
         register_address = MPU_REG_ACCEL_XOUT_H;
         result = i2c_master_transmit_receive(mpu_handle, &register_address, 1,
@@ -212,12 +221,9 @@ void app_main(void)
         gyro_z = (int16_t)(((uint16_t)mpu_data[12] << 8) | mpu_data[13]);
 
         ESP_LOGI(TAG, "AX: %d, AY: %d, AZ: %d, GX: %d, GY: %d, GZ: %d\n", accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z);
-
-        // Heartbeat LED
-		// gpio_set_level(USER_LED, 0);
-		// vTaskDelay(pdMS_TO_TICKS(250));
-		// gpio_set_level(USER_LED, 1);
-		// vTaskDelay(pdMS_TO_TICKS(250));
+        
+        ESP_LOGI(MAIN, "\n");
+        
         vTaskDelay(pdMS_TO_TICKS(10));
 	}
 }
