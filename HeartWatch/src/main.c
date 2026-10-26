@@ -5,6 +5,7 @@
 #include "freertos/task.h"
 #include "driver/i2c_master.h"
 #include "driver/spi_master.h"
+#include "driver/gpio.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 
@@ -19,7 +20,8 @@
 #define I2C_SDA GPIO_NUM_5
 #define SPI_SCLK GPIO_NUM_7
 #define SPI_MOSI GPIO_NUM_9
-// #define SPI_MISO GPIO_NUM_8
+#define BUTTON_1_PIN GPIO_NUM_1
+#define BUTTON_2_PIN GPIO_NUM_8
 #define SPI_DC GPIO_NUM_43
 #define SPI_CS GPIO_NUM_44
 #define SPI_RST GPIO_NUM_4
@@ -39,12 +41,43 @@ static const char *TAG = "mpu";
 static const char *HEART_RATE_TAG = "heartrate";
 static const char *MAIN = "esp";
 
+ // Button Setup (Polling Style)
+int button1State = 1;
+int lastButton1State = 1;
+uint32_t lastDebounceTime1 = 0;
+int button2State = 1;
+int lastButton2State = 1;
+uint32_t lastDebounceTime2 = 0;
+
+int display = 0;
+
+// Variables to hold MAX30101 values
+uint32_t ir_value;
+uint32_t ir_baseline = 0;
+uint32_t signal_peak = 0;
+int64_t last_beat_ms = 0;
+uint16_t stable_bpm = 0;
+
+uint32_t millis() {
+    return (uint32_t)(esp_timer_get_time() / 1000ULL);
+}
 
 // Main application loop
 void app_main(void)
 {
     // Configurations
 
+    // Button Config
+    gpio_reset_pin(BUTTON_1_PIN);
+    gpio_set_direction(BUTTON_1_PIN, GPIO_MODE_INPUT);
+    gpio_set_pull_mode(BUTTON_1_PIN, GPIO_PULLUP_ONLY);
+
+    gpio_reset_pin(BUTTON_2_PIN);
+    gpio_set_direction(BUTTON_2_PIN, GPIO_MODE_INPUT);
+    gpio_set_pull_mode(BUTTON_2_PIN, GPIO_PULLUP_ONLY);
+
+    const uint32_t debounceDelay = 10; // 50ms delay
+    
     // Heartbeat LED config
 	gpio_config_t led_config = {
 		.pin_bit_mask = 1ULL << USER_LED,
@@ -66,15 +99,15 @@ void app_main(void)
     };
     ESP_ERROR_CHECK(sh1107_init(&display_config));
     ESP_ERROR_CHECK(sh1107_clear());
-    displayHUD(0);
+    displayHUD(display);
 
     vTaskDelay(200);
 
-    ESP_ERROR_CHECK(sh1107_clear());
+    //ESP_ERROR_CHECK(sh1107_clear());
 
     vTaskDelay(100);
 
-    displayHUD(2);
+    //displayHUD(2);
     // I2C master configuration
     i2c_master_bus_config_t i2c_mst_config = {
         .clk_source = I2C_CLK_SRC_DEFAULT,
@@ -84,8 +117,10 @@ void app_main(void)
         .glitch_ignore_cnt = 7,
         .flags.enable_internal_pullup = true,
     };
+
     // bus handler (to be used for calls after setup)
     i2c_master_bus_handle_t bus_handle;
+
     // Error checking & bus setup (verifies I2C bus setup correctly)
     ESP_ERROR_CHECK(i2c_new_master_bus(&i2c_mst_config, &bus_handle));
 
@@ -131,100 +166,195 @@ void app_main(void)
     ESP_ERROR_CHECK(max30101_init(heartrate_handle));
     ESP_LOGI(HEART_RATE_TAG, "MAX30101 initialized");
 
-    // Variables to hold MAX30101 values
-    uint32_t ir_value;
-    uint32_t ir_baseline = 0;
-    uint32_t signal_peak = 0;
-    int64_t last_beat_ms = 0;
-    
-    uint16_t stable_bpm = 0;
 
     // Main polling loop
 	while (1) {
-        
-        // Read heart rate BPM
-        for (int sample_count = 0; sample_count < 8; sample_count++) {
-            if (!max30101_read_ir(heartrate_handle, &ir_value)) {
-                break;
-            }
+            
+        // Button Debounce Routines and Display Selections
+        int reading1 = gpio_get_level(BUTTON_1_PIN);
+        if (reading1 != lastButton1State) {
+            lastDebounceTime1 = millis();
+        }
 
-            if (ir_baseline == 0) {
-                ir_baseline = ir_value;
-            }
+        if ((millis() - lastDebounceTime1) > debounceDelay) {
+            if (reading1 != button1State) {
+                button1State = reading1;
 
-            // Track the slowly changing DC level and detect a pulse above it.
-            // baseline value for ambient light
-            ir_baseline = (ir_baseline * 31 + ir_value) / 32;
-            // Remove slowly changing DC component from IR reading
-            uint32_t signal = ir_value > ir_baseline ? ir_value - ir_baseline : 0;
-            // update previous peak from signal
-            uint32_t previous_peak = signal_peak;
-            // update current signal peak (new peak is 7/8ths old peak, 1/8th new signal)
-            signal_peak = (signal_peak * 7 + signal) / 8;
-            // Get the current time on the timer (ms)
-            int64_t now_ms = esp_timer_get_time() / 1000;
-
-            /**
-             * Heartbeat recognition
-             * ir_value > 5000 : assumes finger is present, otherwise ambient pulse
-             * signal > 500 : pulse must be at least 500 counts above baseline
-             * signal > previous_peak * 3/2 : signal must be 50% larger than recent smoothed level
-             * now_ms - last_beat_ms > 300 : theoretical maximum limit for BPM of 200 
-             *          -> 60000 ms in a minute / 300 ms = 200 BPM
-             */
-            if (ir_value > 5000 && signal > 500 && signal > previous_peak * 3 / 2 &&
-                now_ms - last_beat_ms > 300) {
-                // Ensure first detected pulse doesn't provide a data entry
-                if (last_beat_ms != 0) {
-                    // calculate bpm (60000 ms in a minute / change in time)
-                    uint32_t bpm = 60000 / (now_ms - last_beat_ms);
-                    // If the BPM is reasonable, print it to log
-                    if (bpm >= 40 && bpm <= 220) {
-                        stable_bpm = bpm;
-                        ESP_LOGE(HEART_RATE_TAG, "Heart rate: %3lu BPM", (unsigned long)bpm);
-
-
-                        ESP_ERROR_CHECK(sh1107_set_cursor(5, 7));
-                        char message[14];
-
-                        snprintf(message, sizeof(message),"  HR: %3lu BPM", (unsigned long)bpm);
-                        ESP_ERROR_CHECK(sh1107_print(message));
-                    } 
+                if (button1State == 0) {
+                    ESP_ERROR_CHECK(sh1107_set_cursor(0, 0));
+                    display++;
+                    if (display > 3) {
+                        display = 0;
+                    }   
+               
+                    switch (display) {
+                        case 0: // Bootup Screen 
+                            displayHUD(0);
+                        break;
+                        case 1: // Clock Display
+                            displayHUD(1);
+                        break;
+                        case 2: // Heart Rate
+                            displayHUD(2);
+                        break;
+                        case 3: // Motion Tracking
+                            displayHUD(3);
+                        break; 
+                    }
                 }
-                // update last time for beat
-                last_beat_ms = now_ms;
             }
         }
-        
-        ESP_LOGE(HEART_RATE_TAG, "(stable) Heart rate: %3lu BPM", (unsigned long)stable_bpm);
+        lastButton1State = reading1;
+        int reading2 = gpio_get_level(BUTTON_2_PIN);
+        if (reading2 != lastButton2State) {
+            lastDebounceTime2 = millis();
+        }
+
+        if ((millis() - lastDebounceTime2) > debounceDelay) {
+            if (reading2 != button2State) {
+                button2State = reading2;
+
+                if (button2State == 0) {
+                    ESP_ERROR_CHECK(sh1107_set_cursor(0, 0));
+                    display = 4;
+                    displayHUD(display);
+                }
+            }
+        }
+        lastButton2State = reading2;
 
 
-        // MPU reading output to error log
-        // ESP_LOGI(TAG, "WHO_AM_I: 0x%02X", mpu_data[0]);
-		// register_address = MPU_REG_ACCEL_XOUT_H;
-		// result = i2c_master_transmit_receive(mpu_handle, &register_address, 1,
-		//                                      mpu_data, sizeof(mpu_data), -1);
-		// ESP_ERROR_CHECK(result);
-		// ESP_LOG_BUFFER_HEXDUMP(TAG, mpu_data, sizeof(mpu_data), ESP_LOG_INFO);
+        // Display 1: Timer
+        if (display == 1) {
+            unsigned long time = millis() % 10000;
+            char message[14];
+            snprintf(message, sizeof(message),"     %lu   ", time);
+            ESP_ERROR_CHECK(sh1107_set_cursor(5, 7));
+            ESP_ERROR_CHECK(sh1107_print(message));
+        }
 
-        
-        // MPU data read
-        register_address = MPU_REG_ACCEL_XOUT_H;
-        result = i2c_master_transmit_receive(mpu_handle, &register_address, 1,
-                             mpu_data, MPU_DATA_LENGTH, -1);
-        ESP_ERROR_CHECK(result);
-        accel_x = (int16_t)(((uint16_t)mpu_data[0] << 8) | mpu_data[1]);
-        accel_y = (int16_t)(((uint16_t)mpu_data[2] << 8) | mpu_data[3]);
-        accel_z = (int16_t)(((uint16_t)mpu_data[4] << 8) | mpu_data[5]);
-        gyro_x = (int16_t)(((uint16_t)mpu_data[8] << 8) | mpu_data[9]);
-        gyro_y = (int16_t)(((uint16_t)mpu_data[10] << 8) | mpu_data[11]);
-        gyro_z = (int16_t)(((uint16_t)mpu_data[12] << 8) | mpu_data[13]);
 
-        ESP_LOGI(TAG, "AX: %d, AY: %d, AZ: %d, GX: %d, GY: %d, GZ: %d\n", accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z);
+        // Display 2: Heart Rate
+        if (display == 2) {
         
-        ESP_LOGI(MAIN, "\n");
+            bool sensor_success = false;
+            int read_attempts = 0;
+
+            // Try to read the buffer
+            while (max30101_read_ir(heartrate_handle, &ir_value)) {
+                sensor_success = true;
+                read_attempts++;
+                 // Read heart rate BPM
+                for (int sample_count = 0; sample_count < 8; sample_count++) {
+                    if (!max30101_read_ir(heartrate_handle, &ir_value)) {
+                        break;
+                    }
+
+                    if (ir_baseline == 0) {
+                        ir_baseline = ir_value;
+                    }
+
+                    // Track the slowly changing DC level and detect a pulse above it.
+                    // baseline value for ambient light
+                    ir_baseline = (ir_baseline * 31 + ir_value) / 32;
+                    // Remove slowly changing DC component from IR reading
+                    uint32_t signal = ir_value > ir_baseline ? ir_value - ir_baseline : 0;
+                    // update previous peak from signal
+                    uint32_t previous_peak = signal_peak;
+                    // update current signal peak (new peak is 7/8ths old peak, 1/8th new signal)
+                    signal_peak = (signal_peak * 7 + signal) / 8;
+                    // Get the current time on the timer (ms)
+                    int64_t now_ms = esp_timer_get_time() / 1000;
+
+                    /**
+                     * Heartbeat recognition
+                     * ir_value > 5000 : assumes finger is present, otherwise ambient pulse
+                     * signal > 500 : pulse must be at least 500 counts above baseline
+                     * signal > previous_peak * 3/2 : signal must be 50% larger than recent smoothed level
+                     * now_ms - last_beat_ms > 300 : theoretical maximum limit for BPM of 200 
+                     *          -> 60000 ms in a minute / 300 ms = 200 BPM
+                     */
+                    if (ir_value > 5000 && signal > 500 && signal > previous_peak * 3 / 2 &&
+                        now_ms - last_beat_ms > 300) {
+                        // Ensure first detected pulse doesn't provide a data entry
+                        if (last_beat_ms != 0) {
+                            // calculate bpm (60000 ms in a minute / change in time)
+                            uint32_t bpm = 60000 / (now_ms - last_beat_ms);
+                            // If the BPM is reasonable, print it to log
+                            if (bpm >= 40 && bpm <= 220) {
+                                stable_bpm = bpm;
+                            } 
+                        }
+                        // update last time for beat
+                        last_beat_ms = now_ms;
+                    }
+                }
+            } // End of while loop
+
+            // Reset on failure (used for when buffer fills up after changing displays)
+            static uint32_t fail_count = 0;
+            if (!sensor_success) {
+                fail_count++;
+                if (fail_count > 20) { // If it fails for 20 consecutive loops (~200ms)
+                    ESP_LOGW(HEART_RATE_TAG, "Sensor locked up. Re-initializing...");
+                    max30101_init(heartrate_handle); // Reset the sensor hardware
+                    fail_count = 0;                  // Reset counter
+                }
+            } else {
+                fail_count = 0; // Reset counter on successful read
+            }
+
+            // Display Data to screen
+            //ESP_LOGE(HEART_RATE_TAG, "(stable) Heart rate: %3lu BPM", (unsigned long)stable_bpm);
+            char message[32];
+            snprintf(message, sizeof(message),"  HR: %3lu BPM", (unsigned long)stable_bpm);
+            ESP_ERROR_CHECK(sh1107_set_cursor(5, 7));
+            ESP_ERROR_CHECK(sh1107_print(message));
+        }   
+
+
+
+        // Display 3: MPU
+        if (display == 3) {
+            static uint32_t last_mpu_read = 0;
+
+            if (millis() - last_mpu_read > 250) {
+                last_mpu_read = millis();
         
+                // MPU data read
+                register_address = MPU_REG_ACCEL_XOUT_H;
+                result = i2c_master_transmit_receive(mpu_handle, &register_address, 1,
+                                        mpu_data, MPU_DATA_LENGTH, -1);
+                ESP_ERROR_CHECK(result);
+                accel_x = (int16_t)(((uint16_t)mpu_data[0] << 8) | mpu_data[1]);
+                accel_y = (int16_t)(((uint16_t)mpu_data[2] << 8) | mpu_data[3]);
+                accel_z = (int16_t)(((uint16_t)mpu_data[4] << 8) | mpu_data[5]);
+                gyro_x = (int16_t)(((uint16_t)mpu_data[8] << 8) | mpu_data[9]);
+                gyro_y = (int16_t)(((uint16_t)mpu_data[10] << 8) | mpu_data[11]);
+                gyro_z = (int16_t)(((uint16_t)mpu_data[12] << 8) | mpu_data[13]);
+            
+                
+                char message[128];
+                snprintf(message, sizeof(message),
+                        "   AX:%6d\n   AY:%6d\n   AZ:%6d\n   GX:%6d\n   GY:%6d\n   GZ:%6d", 
+                         accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z);
+                ESP_ERROR_CHECK(sh1107_set_cursor(0, 7));
+                ESP_ERROR_CHECK(sh1107_print(message));
+
+            
+                ESP_LOGI(TAG, "AX: %d, AY: %d, AZ: %d, GX: %d, GY: %d, GZ: %d\n", accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z);
+                
+                ESP_LOGI(MAIN, "\n");
+                
+                //MPU reading output to error log
+                ESP_LOGI(TAG, "WHO_AM_I: 0x%02X", mpu_data[0]);
+                register_address = MPU_REG_ACCEL_XOUT_H;
+                result = i2c_master_transmit_receive(mpu_handle, &register_address, 1,
+                                                        mpu_data, sizeof(mpu_data), -1);
+                ESP_ERROR_CHECK(result);
+                ESP_LOG_BUFFER_HEXDUMP(TAG, mpu_data, sizeof(mpu_data), ESP_LOG_INFO);
+            }
+        }
         vTaskDelay(pdMS_TO_TICKS(10));
 	}
 }
-
