@@ -1,0 +1,10 @@
+# HeartWatch activity-model TRAINING environment (not the app's .venv).
+# Direct dependencies only, pinned. The full resolved set (pip freeze) is
+# recorded in each exported model_meta.json, never copied here.
+#
+#   /usr/local/bin/python3 -m venv heartwatchapp/ml/training/.venv
+#   heartwatchapp/ml/training/.venv/bin/python -m pip install -r heartwatchapp/ml/training/requirements-train.txt
+tensorflow==2.21.0
+keras==3.15.1
+numpy==2.4.6
+matplotlib==3.11.2

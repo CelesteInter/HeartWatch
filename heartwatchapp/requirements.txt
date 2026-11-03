@@ -9,6 +9,12 @@ matplotlib>=3.8
 # releases (see llm/client.py's CONNECTION_ERRORS).
 ollama==0.6.2
 
+# Activity classifier (ml/inference.py, ml/preprocess.py): numpy for the
+# preprocessing, the small LiteRT runtime (not full TensorFlow) to run the
+# exported .tflite model. Same numpy pin as ml/training/requirements-train.txt.
+numpy==2.4.6
+ai-edge-litert==2.3.0
+
 # Not imported yet; installed for planned steps:
 #   step 6 — BLE stream from XIAO ESP32-S3
 bleak>=0.22

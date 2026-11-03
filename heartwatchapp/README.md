@@ -460,6 +460,78 @@ real recordings.
 to first token 0.04s; warm generation 0.11–0.94s; cold load 2.31s.
 Selected to fit an 8 GB development machine.
 
+## Activity model
+
+The app will guess **Sitting, Walking, Standing or Running** from the
+watch's motion sensor. Version 0 builds every step of that end to end, but
+**it is a plumbing test, not an accuracy result**: about 2.7 minutes of
+data, from one person, with one recording each of two activities
+(`HeartWatch/test/Standing.txt`, `HeartWatch/test/Walking.txt`). The model
+is **not wired into any screen**. The Live Monitor and the predictions
+table still use the `demo-dummy` generator.
+
+**The rule (all numbers in `ml/spec.py`):**
+
+1. **Read.** `ml/recording.py` turns a capture log (or a database session)
+   into motion readings in g and °/s. The captures' raw counts are scaled
+   by 1/16384 g and 1/131 °/s, the sensor's power-on defaults, because
+   firmware 1eabdb8 never sets the range. Database sessions from `seed`,
+   `demo` or `demo-session`, or with scales exactly (1.0, 1.0), are refused
+   because their stored scales are placeholders.
+2. **10 Hz.** Each 100 ms slot of raw readings is averaged into one sample
+   (`ml/preprocess.py`). Slots are half-open, `[t, t + 100 ms)`, and each
+   sample is stamped at its slot's end. An empty slot is a gap and is
+   never filled in.
+3. **Trim** the first and last 5 seconds of each recording.
+4. **Windows** of 5 seconds (50 samples), stamped at their end like the
+   predictions table. Any window touching a gap is dropped. Training uses
+   50% overlap; live predictions won't overlap (one every 5 s).
+5. **Normalize** with fixed constants: accel ÷ 4 g, gyro ÷ 500 °/s. Gravity
+   is kept. Heart rate isn't used.
+
+`preprocess.prepare()` runs steps 2–5. It is the only entry point, for
+training and the app alike. The model input is `(1, 50, 6)`.
+
+**Training environment** (separate from the app's `.venv`, so full
+TensorFlow stays out of the app). Run from the repo root:
+
+```bash
+/usr/local/bin/python3 -m venv heartwatchapp/ml/training/.venv
+heartwatchapp/ml/training/.venv/bin/python -m pip install -r heartwatchapp/ml/training/requirements-train.txt
+```
+
+**Train, export and report** (repo root):
+
+```bash
+heartwatchapp/ml/training/.venv/bin/python -m heartwatchapp.ml.training.train
+```
+
+This splits each recording by time (first 70% train, a one-window gap,
+then test), scores three simple baselines (majority class, a motion
+threshold, and a tilt-only check), trains a small 1D CNN on the training
+windows only, and writes:
+
+- `ml/models/har_cnn.tflite`, `model_meta.json` and `parity.npz`
+  (git-ignored). The metadata records the classes, rate, window,
+  normalization, the captures' SHA-256s, the git commit, the converter
+  path used, and the training venv's full `pip freeze`.
+- `ml/runs/<timestamp>/report.md` (git-ignored): window counts, baseline
+  and CNN scores (each with its raw window count), confusion matrices and
+  model size.
+
+**Check the model in the app environment** (LiteRT only, no TensorFlow):
+
+```bash
+heartwatchapp/.venv/bin/python -m heartwatchapp.ml.check_model
+```
+
+This prints how far LiteRT's answers are from Keras's on the saved test
+windows, and the inference time per window. The app's `ActivityClassifier.load()`
+refuses a model whose metadata (classes, rate, window, channels,
+normalization) differs from `ml/spec.py`. `tests/test_ml_pipeline.py`
+covers all of this, and skips the LiteRT parity check when no model has
+been exported.
+
 ## Where numbers come from
 
 Every number the app shows -- the Dashboard's cards, bars and donut, the
@@ -612,7 +684,13 @@ heartwatchapp/
 │   ├── prompts.py       system prompts + session-summary and question-parser prompt text
 │   ├── validate.py      checks every generated summary before it's shown
 │   └── worker.py        Qt-thread bridge (sends checked replies to the GUI)
-├── ml/inference.py      TFLite activity classifier stub
+├── ml/
+│   ├── spec.py          every pipeline number (10 Hz, 50-sample window, trim, normalization)
+│   ├── recording.py     capture logs / DB sessions -> Recording in g and deg/s
+│   ├── preprocess.py    resample -> trim -> windows -> normalize (prepare())
+│   ├── inference.py     ActivityClassifier (LiteRT), metadata checks; CLASSES
+│   ├── check_model.py   LiteRT-vs-Keras parity and timing, app venv
+│   └── training/        own venv: dataset, baselines, train, export, report
 ├── scripts/
 │   ├── benchmark_ollama.py  standalone viability check, run by hand
 │   ├── demo_db.py           builds the demo session on a fresh DB (shared by the two below)
@@ -637,6 +715,7 @@ heartwatchapp/
     ├── test_eval_ask.py       ask eval: real-DB refusal, scoring, rules-mode run
     ├── test_ai_bar.py         AI bar offscreen: answers, stale replies, timeout, preload
     ├── test_db_path.py        DB path defaults follow a patched db.DB_PATH; main window leaves the real DB alone
+    ├── test_ml_pipeline.py    activity model: spec, parser, resampling, windows, DB skew, guards, LiteRT parity
     ├── test_recording.py      Start/Stop recording: nothing at launch, labels, windows, crash recovery, quit, theme
     └── test_sources.py        sources/base.py stays Qt- and asyncio-free; DummySource schedule and values
 ```
@@ -650,7 +729,7 @@ heartwatchapp/
 | 3 | Live Monitor — dummy sine HR + IMU axes + dummy activity predictions (`model_version "demo-dummy"`) until milestone 6; preview, Start/Stop recording with an optional activity label, crash recovery | done |
 | 4 | "Ask about your data" bar — keyword parser + local model (gemma3:1b) fill a form; Python answers via `data/queries.py` | done (v1.1: typos, session summary, activity breakdown, evidence check, suggestions; see Known limitations) |
 | 5 | SQLite integration (replace demo data) | done for the Dashboard, Sessions and the AI bar (all through `data/queries.py`); the Live Monitor saves only what you record, from a swappable data source (`sources/`), still dummy data |
-| 6 | BLE stream from ESP32-S3 + real TFLite inference | not started |
+| 6 | BLE stream from ESP32-S3 + real TFLite inference | BLE not started; activity-model pipeline v0 built (single-subject plumbing test, not wired into any screen; see Activity model) |
 | — | Session summaries | done — plain (Python-written) by default; AI phrasing via Ollama / gemma3:1b with `HEARTWATCH_SUMMARY_MODE=llm`, degrades to the plain summary otherwise |
 
 The Dashboard, Sessions and AI bar read the SQLite database. The Live Monitor's

@@ -7,6 +7,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QFileDialog, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
 from ..data import db
+from ..ml.inference import INPUT_SHAPE
 from .theme import Theme
 from .widgets import Card, PlaceholderState, heading, muted
 
@@ -22,6 +23,8 @@ def _left(w: QWidget) -> QWidget:
 PIPELINE_SUMMARY = (
     "windowed [ax, ay, az, gx, gy, gz]  →  1D CNN  →  TFLite inference"
 )
+# Derived from ml.inference.INPUT_SHAPE, so the label can't go stale.
+INPUT_SHAPE_TEXT = f"[{', '.join(str(d) for d in INPUT_SHAPE)}]  (window, channels)"
 
 
 class MlView(QWidget):
@@ -37,7 +40,7 @@ class MlView(QWidget):
         status.body().addWidget(heading("Model status"))
         for k, v in [
             ("Model file", "ml/models/har_cnn.tflite (not loaded)"),
-            ("Input shape", "[1, 128, 6]  (window, channels)"),
+            ("Input shape", INPUT_SHAPE_TEXT),
             ("Output classes", "Sitting · Walking · Standing · Running"),
             ("Last updated", "—"),
         ]:

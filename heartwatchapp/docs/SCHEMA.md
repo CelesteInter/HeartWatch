@@ -102,6 +102,12 @@ One row per activity-classification window from the 1D CNN.
 | `confidence` | REAL | Model confidence, 0–1. |
 | `model_version` | TEXT | Lets the same session's raw data be re-scored and compared across model builds without losing the original prediction. |
 
+Live predictions are **non-overlapping by design**: one every 5 seconds,
+each covering the 5 seconds before its `ts` (window = hop = 50 samples at
+10 Hz, `ml/spec.py`). That keeps the rule "a prediction owns
+`[ts − 5 s, ts)`" (`data/stats.py`) exact with no schema change. The 50%
+overlap used in training never reaches this table.
+
 Nothing calls `insert_prediction` yet — see "Open items" below.
 
 ### `schema_meta`
