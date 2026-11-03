@@ -1,8 +1,8 @@
 """DatabaseWriter -- the single thread allowed to write to heartwatch.db.
 
 Why this exists: SQLite connections are not safe to share across threads,
-and the app has several (Qt main thread, Live Monitor generator ticks,
-eventually the BLE receive thread). Rather than open-and-close a
+and the app has several (Qt main thread, the recording controller's
+sample writes, eventually the BLE receive thread). Rather than open-and-close a
 connection per write, one background thread owns a single connection for
 the app's lifetime and pulls queued work off a queue.Queue.
 
@@ -14,7 +14,8 @@ Two kinds of work move through the queue:
   buffered -- as one executemany() per table inside one transaction. At
   10 Hz the IMU alone produces ~36,000 rows/hour; one disk sync per row
   would not keep up once BLE is live, so this batching is built now.
-- Control operations (start_session, end_session, delete_session) need a
+- Control operations (start_session, end_session, delete_session,
+  close_orphan_sessions) need a
   result back on the caller's thread (a new session id, or confirmation
   a delete finished before the UI refreshes row counts). These block the
   calling thread on a one-shot queue.Queue until the writer thread has
@@ -49,6 +50,7 @@ class _Kind(Enum):
     START_SESSION = auto()
     END_SESSION = auto()
     DELETE_SESSION = auto()
+    CLOSE_ORPHANS = auto()
     SEED_DEMO = auto()
     FLUSH = auto()
     STOP = auto()
@@ -67,8 +69,10 @@ _BATCH_KINDS = (_Kind.INSERT_IMU, _Kind.INSERT_HR, _Kind.INSERT_PREDICTION)
 class DatabaseWriter:
     """Owns the one write connection to heartwatch.db and its worker thread."""
 
-    def __init__(self, db_path: str | Path = db_ops.DB_PATH):
-        self._db_path = db_path
+    def __init__(self, db_path: str | Path | None = None):
+        """`db_path`: the database to write; None means the app's own
+        (db.DB_PATH, read when the writer is created)."""
+        self._db_path = db_path if db_path is not None else db_ops.DB_PATH
         self._queue: "queue.Queue[_Job]" = queue.Queue()
         self._thread: threading.Thread | None = None
         self._started = False
@@ -116,14 +120,27 @@ class DatabaseWriter:
         label: str | None,
         accel_scale: float,
         gyro_scale: float,
+        started_at: int | None = None,
     ) -> int:
-        started_at = int(time.time() * 1000)
+        """`started_at` (epoch ms) defaults to now. The recording
+        controller passes its own, so the time it filters samples by and
+        the stored start are the same number."""
+        if started_at is None:
+            started_at = int(time.time() * 1000)
         payload = (device_id, label, accel_scale, gyro_scale, started_at)
         return self._submit_sync(_Kind.START_SESSION, payload)
 
-    def end_session(self, session_id: int) -> None:
-        ended_at = int(time.time() * 1000)
+    def end_session(self, session_id: int, ended_at: int | None = None) -> None:
+        """`ended_at` (epoch ms) defaults to now."""
+        if ended_at is None:
+            ended_at = int(time.time() * 1000)
         self._submit_sync(_Kind.END_SESSION, (session_id, ended_at))
+
+    def close_orphan_sessions(self) -> int:
+        """Closes every session a crash left unfinished (data/db.py's
+        close_orphan_sessions()) and returns how many. Run once at startup,
+        before anything starts recording."""
+        return self._submit_sync(_Kind.CLOSE_ORPHANS, None)
 
     def delete_session(self, session_id: int) -> None:
         self._submit_sync(_Kind.DELETE_SESSION, session_id)
@@ -247,6 +264,9 @@ class DatabaseWriter:
                 with conn:
                     db_ops.delete_session(conn, job.payload)
                 result = None
+            elif job.kind is _Kind.CLOSE_ORPHANS:
+                with conn:
+                    result = db_ops.close_orphan_sessions(conn)
             elif job.kind is _Kind.SEED_DEMO:
                 label, started_at, ended_at, imu_rows, hr_rows, pred_rows = job.payload
                 with conn:

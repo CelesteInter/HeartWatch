@@ -41,8 +41,9 @@ MIN_DURATION_S = 60.0     # seconds
 # Each classifier prediction describes one PREDICTION_WINDOW_MS-long window
 # of sensor data. PREDICTION_TIMESTAMP_MARKS says which edge of that window
 # the prediction's timestamp is: "end" (every generator in the app --
-# data/seed.py, data/writer.py, ui/live_monitor.py, scripts/demo_session.py
-# -- writes the first prediction at start + 5 s, then every 5 s) or
+# data/seed.py, data/writer.py, sources/dummy.py (whose schedule restarts at
+# Start), scripts/demo_session.py -- writes the first prediction at
+# start + 5 s, then every 5 s) or
 # "start". See _activity_segments() for exactly which time each prediction
 # is credited with.
 PREDICTION_WINDOW_MS = 5000
@@ -53,11 +54,11 @@ PREDICTION_TIMESTAMP_MARKS = "end"   # "end" (current convention) or "start"
 _CANONICAL_LABELS = {label.lower(): label for label in CLASSES}
 
 
-def compute_session_stats(session_id: int, path: str | Path = db.DB_PATH) -> dict:
+def compute_session_stats(session_id: int, path: str | Path | None = None) -> dict:
     """Reads one session's rows out of SQLite and reduces them to the
     facts a summary needs. Raises ValueError if the session id doesn't
-    exist. `path` defaults to the app's real database; tests pass a
-    fixture path instead.
+    exist. `path` defaults to the app's database (db.DB_PATH, read at call
+    time); tests pass a fixture path instead.
 
     Returns a dict with: session_id, label, duration_s, avg_hr, max_hr
     (None if there are no HR samples), hr_sample_count, activity_seconds

@@ -1,50 +1,57 @@
-"""Section 2 — Live Monitor. Two-column: HR chart (left ~60%) · stacked panels (right).
+"""Section 2 — Live Monitor. Control row on top; below it, two columns:
+HR chart (left ~60%) · stacked panels (right).
 
-The HR/IMU values are still a dummy generator (sine-wave HR, random-walk IMU) --
-step 6 swaps the generator for the real BLE stream from the ESP32-S3. What's real
-now is the write path: every generated sample is inserted through
-DatabaseWriter.insert_imu_batch / insert_hr_batch against a session opened with
-start_session(device_id="demo", ...), exactly like BLE data will be. That makes
-step 6 a source swap and nothing else.
+The view only displays. Readings come from recording/controller.py's
+RecordingController (which the main window owns, so a recording survives
+a theme rebuild of this view), fed by a data source -- today the dummy
+generators in sources/dummy.py, later the real watch. Before Start the
+readings are a preview and nothing is saved; Start opens a session
+(optionally labeled with an activity) and Stop ends it.
 
-The activity badge is dummy too: every 5 seconds it picks a (usually
-unchanged) activity with a random confidence and writes it as a prediction
-row, model_version "demo-dummy", through DatabaseWriter.insert_prediction --
-the same path the real TFLite classifier will use in step 6. Without these,
-demo sessions would have no predictions and could never get an AI summary
-(see data/stats.py's is_summarizable()).
+The activity badge shows the source's predictions -- for now the dummy
+classifier (model_version "demo-dummy", data/seed.py).
 """
 
 from __future__ import annotations
 
-import math
-import random
-import time
-
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import (
+    QComboBox,
     QHBoxLayout,
     QLabel,
+    QPushButton,
     QVBoxLayout,
     QWidget,
 )
 
-from ..data import seed
-from ..data.writer import DatabaseWriter
+from ..ml.inference import CLASSES
+from ..recording.controller import RECORDING, RecordingController
+from ..sources.base import HrReading, ImuReading, PredictionReading
 from .charts import LiveHRChart
 from .theme import Theme
 from .widgets import Badge, Card, heading, muted
 
-# Placeholder scale factors for the demo session (per the SQLite handoff, §6) --
-# raw stored counts equal the demo's float units 1:1 until BLE supplies real
-# accel/gyro range settings. Multiplied in only when writing to the DB so the
-# on-screen numbers (which read naturally as g / deg-per-second) don't change.
+# Raw stored IMU counts = on-screen value (g, deg/s) x this, for the dummy
+# source (sources/dummy.py). The sessions row's accel_scale / gyro_scale are
+# still placeholder 1.0s until BLE supplies real range settings.
 _RAW_COUNT_SCALE = 1000
 
-# The dummy activity classifier (until step 6's real TFLite model) lives in
-# data/seed.py so "Seed demo session" can reuse it -- see
-# seed.next_dummy_prediction() and the constants next to it.
+PREVIEW_TEXT = "Preview · not saved"
+NO_LABEL_TEXT = "No label"
+START_TEXT = "Start"
+STOP_TEXT = "Stop"
+
+
+def format_elapsed(ms: int) -> str:
+    """"3:12" for 3 min 12 s; "1:02:03" once past an hour."""
+    total_s = ms // 1000
+    hours, rest = divmod(total_s, 3600)
+    minutes, seconds = divmod(rest, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{seconds:02d}"
+    return f"{minutes}:{seconds:02d}"
+
 
 IMU_AXES = [
     ("ax", "accent", (-2.0, 2.0)),
@@ -148,43 +155,104 @@ class LiveMonitorView(QWidget):
     def __init__(
         self,
         theme: Theme,
-        writer: DatabaseWriter | None = None,
+        controller: RecordingController | None = None,
         parent: QWidget | None = None,
     ):
         super().__init__(parent)
         self.theme = theme
-        self._t = 0.0
-        self._imu_state = [0.0] * 6
+        self._controller = controller
 
-        self._writer = writer
-        self._session_id: int | None = None
-        if self._writer is not None:
-            self._session_id = self._writer.start_session(
-                device_id="demo", label=None, accel_scale=1.0, gyro_scale=1.0
-            )
-
-        root = QHBoxLayout(self)
+        root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(16)
+        root.addWidget(self._control_row())
 
-        root.addWidget(self._left_column(), 6)
-        root.addWidget(self._right_column(), 4)
+        columns = QHBoxLayout()
+        columns.setSpacing(16)
+        columns.addWidget(self._left_column(), 6)
+        columns.addWidget(self._right_column(), 4)
+        root.addLayout(columns, 1)
 
-        # -- dummy data timers --
-        self._hr_timer = QTimer(self)
-        self._hr_timer.timeout.connect(self._tick_hr)
-        self._hr_timer.start(1000)
+        # Updates "● Recording m:ss" once a second while recording.
+        self._elapsed_timer = QTimer(self)
+        self._elapsed_timer.timeout.connect(self._show_elapsed)
 
-        self._imu_timer = QTimer(self)
-        self._imu_timer.timeout.connect(self._tick_imu)
-        self._imu_timer.start(100)
+        if controller is not None:
+            controller.hr_received.connect(self._show_hr)
+            controller.imu_received.connect(self._show_imu)
+            controller.prediction_received.connect(self._show_prediction)
+            controller.state_changed.connect(self._show_state)
+            # A rebuilt view (theme toggle) picks up a recording in progress.
+            self._show_state(controller.state, controller.session_id, controller.started_at)
+            picker_index = self.activity_picker.findData(controller.label)
+            self.activity_picker.setCurrentIndex(max(picker_index, 0))
+        else:
+            self._show_state(None, None, None)
 
-        self._activity = "Walking"
-        self._prediction_timer = QTimer(self)
-        self._prediction_timer.timeout.connect(self._tick_prediction)
-        self._prediction_timer.start(seed.PREDICTION_WINDOW_MS)
+    def detach(self) -> None:
+        """Disconnects from the controller. Called before this view is torn
+        down (theme rebuild), so a deleted view never receives readings."""
+        self._elapsed_timer.stop()
+        if self._controller is None:
+            return
+        self._controller.hr_received.disconnect(self._show_hr)
+        self._controller.imu_received.disconnect(self._show_imu)
+        self._controller.prediction_received.disconnect(self._show_prediction)
+        self._controller.state_changed.disconnect(self._show_state)
+        self._controller = None
 
-        self._tick_hr()
+    # -- control row -------------------------------------------------------
+    def _control_row(self) -> Card:
+        card = Card(pad=12)
+        row = QHBoxLayout()
+        row.setSpacing(10)
+        self.status_label = QLabel(PREVIEW_TEXT)
+        row.addWidget(self.status_label)
+        row.addStretch(1)
+        row.addWidget(muted("Activity"))
+        self.activity_picker = QComboBox()
+        self.activity_picker.addItem(NO_LABEL_TEXT, None)
+        for activity in CLASSES:
+            self.activity_picker.addItem(activity, activity)
+        row.addWidget(self.activity_picker)
+        self.start_stop_button = QPushButton(START_TEXT)
+        self.start_stop_button.setObjectName("AccentButton")
+        self.start_stop_button.clicked.connect(self._on_start_stop_clicked)
+        row.addWidget(self.start_stop_button)
+        holder = QWidget()
+        holder.setLayout(row)
+        card.body().addWidget(holder)
+        return card
+
+    def _on_start_stop_clicked(self) -> None:
+        if self._controller is None:
+            return
+        if self._controller.state == RECORDING:
+            self._controller.stop()
+        else:
+            self._controller.start(self.activity_picker.currentData())
+
+    def _show_state(self, state: str | None, _session_id, _started_at) -> None:
+        recording = state == RECORDING
+        can_record = self._controller is not None and self._controller.can_record
+        self.start_stop_button.setText(STOP_TEXT if recording else START_TEXT)
+        self.start_stop_button.setEnabled(can_record)
+        self.activity_picker.setEnabled(can_record and not recording)
+        if recording:
+            self.status_label.setStyleSheet(
+                f"color: {self.theme.c('danger')}; font-weight: 600;"
+            )
+            self._show_elapsed()
+            self._elapsed_timer.start(1000)
+        else:
+            self._elapsed_timer.stop()
+            self.status_label.setStyleSheet(f"color: {self.theme.c('text_muted')};")
+            self.status_label.setText(PREVIEW_TEXT)
+
+    def _show_elapsed(self) -> None:
+        if self._controller is not None:
+            elapsed = format_elapsed(self._controller.elapsed_ms())
+            self.status_label.setText(f"● Recording {elapsed}")
 
     # -- left ------------------------------------------------------------
     def _left_column(self) -> Card:
@@ -240,53 +308,21 @@ class LiveMonitorView(QWidget):
         lay.addStretch(1)
         return holder
 
-    # -- dummy generators, routed through the real insert path -----------
-    def _tick_hr(self) -> None:
-        self._t += 1.0
-        bpm = 75 + 12 * math.sin(self._t / 6.0) + random.uniform(-2.5, 2.5)
-        self.hr_number.setText(f"{bpm:.0f}")
-        self.chart.push(bpm)
+    # -- readings from the controller (preview and recording alike) -------
+    def _show_hr(self, readings: list[HrReading]) -> None:
+        for r in readings:
+            self.chart.push(r.bpm)
+        self.hr_number.setText(f"{readings[-1].bpm:.0f}")
 
-        if self._writer is not None and self._session_id is not None:
-            ts = int(time.time() * 1000)
-            self._writer.insert_hr_batch(self._session_id, [(ts, int(round(bpm)), None)])
+    def _show_imu(self, readings: list[ImuReading]) -> None:
+        r = readings[-1]
+        for row, raw in zip(self.imu_rows, (r.ax, r.ay, r.az, r.gx, r.gy, r.gz)):
+            row.set_value(raw / _RAW_COUNT_SCALE)
 
-    def _tick_imu(self) -> None:
-        for i, (_, _, rng) in enumerate(IMU_AXES):
-            span = rng[1] - rng[0]
-            step = random.uniform(-0.04, 0.04) * span
-            self._imu_state[i] = max(rng[0], min(rng[1], self._imu_state[i] + step))
-            self.imu_rows[i].set_value(self._imu_state[i])
-
-        if self._writer is not None and self._session_id is not None:
-            ts = int(time.time() * 1000)
-            raw = tuple(int(round(v * _RAW_COUNT_SCALE)) for v in self._imu_state)
-            self._writer.insert_imu_batch(self._session_id, [(ts, *raw)])
-
-    def _tick_prediction(self) -> None:
-        # Called at the END of each 5-second window, matching the
-        # predictions table's convention that `ts` is the window end time.
-        self._activity, confidence = seed.next_dummy_prediction(self._activity)
-        self.activity_badge.setText(self._activity)
-        self.activity_badge.set_color(self.theme.activity_color(self._activity))
-        self.confidence_label.setText(f"Confidence: {confidence:.0%}")
-
-        if self._writer is not None and self._session_id is not None:
-            ts = int(time.time() * 1000)
-            self._writer.insert_prediction(
-                self._session_id, ts, self._activity, confidence, seed.DUMMY_MODEL_VERSION
-            )
-
-    def shutdown(self) -> None:
-        """Stops the generator timers and closes out the demo session.
-        Must be called before this view is torn down (theme rebuild, app
-        close) so `ended_at` gets stamped instead of staying NULL forever."""
-        self._hr_timer.stop()
-        self._imu_timer.stop()
-        self._prediction_timer.stop()
-        if self._writer is not None and self._session_id is not None:
-            self._writer.end_session(self._session_id)
-            self._session_id = None
+    def _show_prediction(self, r: PredictionReading) -> None:
+        self.activity_badge.setText(r.label)
+        self.activity_badge.set_color(self.theme.activity_color(r.label))
+        self.confidence_label.setText(f"Confidence: {r.confidence:.0%}")
 
     def restyle(self, theme: Theme) -> None:
         self.theme = theme

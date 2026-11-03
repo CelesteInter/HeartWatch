@@ -1,7 +1,7 @@
 """Synthetic sample generation for demo/seed sessions.
 
 Pure functions, no database access -- callers (DatabaseWriter.seed_demo_session,
-LiveMonitorView's tick timers) decide how the rows reach the database. Kept
+sources/dummy.py's DummySource) decide how the rows reach the database. Kept
 separate from db.py/writer.py so the "what does fake sensor data look like"
 logic isn't tangled with SQL.
 """
@@ -15,7 +15,7 @@ from .stats import PREDICTION_WINDOW_MS
 
 ACTIVITY_LABELS = ["Sitting", "Walking", "Standing", "Running"]
 
-# Same shape as Live Monitor's IMU_AXES ranges (ui/live_monitor.py), so seeded
+# Same shape as DummySource's IMU_RANGES (sources/dummy.py), so seeded
 # history and live demo data look like they came from the same source.
 _ACCEL_RANGE = (-2.0, 2.0)
 _GYRO_RANGE = (-250.0, 250.0)
@@ -27,7 +27,7 @@ _RAW_COUNT_SCALE = 1000  # spreads the -2..2 / -250..250 walk into non-degenerat
 # Each window has a small chance of switching activity so sessions get a
 # realistic mix; confidence is random, so now and then a window falls
 # below data/stats.py's LOW_CONFIDENCE_THRESHOLD (0.6). Used by both the
-# Live Monitor's live demo session and DatabaseWriter.seed_demo_session;
+# Live Monitor's DummySource and DatabaseWriter.seed_demo_session;
 # rows are tagged DUMMY_MODEL_VERSION so they're easy to find and delete.
 # Remove along with the other dummy generators in milestone 6.
 # PREDICTION_WINDOW_MS comes from data/stats.py, so the dummy classifier
@@ -41,14 +41,18 @@ def random_label() -> str:
     return random.choice(ACTIVITY_LABELS)
 
 
-def next_dummy_prediction(current_label: str) -> tuple[str, float]:
+def next_dummy_prediction(
+    current_label: str, rng: random.Random | None = None
+) -> tuple[str, float]:
     """One dummy classifier window: (label, confidence). Usually keeps
     `current_label`; with ACTIVITY_SWITCH_CHANCE switches to a different
-    activity."""
+    activity. `rng` (e.g. a seeded random.Random in tests) defaults to the
+    global `random`, so callers that don't pass one behave as before."""
+    rng = rng if rng is not None else random
     label = current_label
-    if random.random() < ACTIVITY_SWITCH_CHANCE:
-        label = random.choice([a for a in ACTIVITY_LABELS if a != current_label])
-    return label, round(random.uniform(*DUMMY_CONFIDENCE_RANGE), 2)
+    if rng.random() < ACTIVITY_SWITCH_CHANCE:
+        label = rng.choice([a for a in ACTIVITY_LABELS if a != current_label])
+    return label, round(rng.uniform(*DUMMY_CONFIDENCE_RANGE), 2)
 
 
 def generate_prediction_rows(
@@ -73,7 +77,7 @@ def generate_imu_rows(
     started_at_ms: int, duration_s: float, hz: float = 10.0
 ) -> list[tuple[int, int, int, int, int, int, int]]:
     """[(ts, ax, ay, az, gx, gy, gz), ...] -- random-walk, same shape as the
-    Live Monitor's dummy generator (ui/live_monitor.py)."""
+    Live Monitor's DummySource (sources/dummy.py)."""
     n = int(duration_s * hz)
     ranges = (_ACCEL_RANGE, _ACCEL_RANGE, _ACCEL_RANGE, _GYRO_RANGE, _GYRO_RANGE, _GYRO_RANGE)
     state = [0.0] * 6
