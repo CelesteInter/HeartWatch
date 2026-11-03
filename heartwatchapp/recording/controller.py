@@ -9,6 +9,13 @@ states:
   no session.
 - RECORDING: after Start, readings are also saved into a new session.
   Stop (or quitting the app) ends the session.
+- ERROR: the database writer failed (data/writer.py), so nothing more can
+  be saved until the app restarts. Readings are still shown; Start is
+  refused. Entered when Start or Stop gets a WriterError, or -- without
+  waiting for Stop -- on the first batch of readings after the writer
+  has failed. A recording cut short this way keeps the rows already
+  saved, but its ended_at isn't stamped (the writer can't); the next
+  launch's crash recovery closes it.
 
 Every reading on screen comes through here in both states, so preview and
 recording look the same apart from the status badge.
@@ -38,11 +45,12 @@ from collections.abc import Callable
 from PySide6.QtCore import QObject, Signal
 
 from ..data.stats import PREDICTION_WINDOW_MS
-from ..data.writer import DatabaseWriter
+from ..data.writer import QUIT_TIMEOUT_S, SYNC_TIMEOUT_S, DatabaseWriter, WriterError
 from ..sources.base import DataSource, HrReading, ImuReading, PredictionReading
 
 PREVIEW = "preview"
 RECORDING = "recording"
+ERROR = "error"
 
 logger = logging.getLogger("heartwatch.recording")
 
@@ -110,7 +118,11 @@ class RecordingController(QObject):
 
     @property
     def can_record(self) -> bool:
-        return self._writer is not None
+        return (
+            self._writer is not None
+            and self._writer.failed is None
+            and self._state != ERROR
+        )
 
     def elapsed_ms(self) -> int:
         """How long the current recording has run; 0 in preview."""
@@ -128,8 +140,10 @@ class RecordingController(QObject):
 
     def shutdown(self) -> None:
         """App quit: ends a recording in progress (so it is saved), then
-        stops the source. Must run before the writer stops."""
-        self.stop()
+        stops the source. Must run before the writer stops. Never waits on
+        the writer longer than QUIT_TIMEOUT_S; a writer error is logged
+        (by stop()) and the quit carries on."""
+        self.stop(timeout=QUIT_TIMEOUT_S)
         if self._running:
             self._running = False
             self._source.stop()
@@ -143,15 +157,23 @@ class RecordingController(QObject):
         if self._writer is None:
             logger.warning("Start ignored: no database writer")
             return None
+        if self._state == ERROR:
+            logger.warning("Start ignored: the database writer has failed")
+            return None
         started_at = self._clock()
         self._source.align_windows(started_at)
-        session_id = self._writer.start_session(
-            self._source.device_id,
-            activity_label,
-            self._source.accel_scale,
-            self._source.gyro_scale,
-            started_at=started_at,
-        )
+        try:
+            session_id = self._writer.start_session(
+                self._source.device_id,
+                activity_label,
+                self._source.accel_scale,
+                self._source.gyro_scale,
+                started_at=started_at,
+            )
+        except WriterError:
+            logger.exception("Start failed: couldn't open a session")
+            self._enter_error()
+            return None
         self._state = RECORDING
         self._session_id = session_id
         self._started_at = started_at
@@ -161,16 +183,23 @@ class RecordingController(QObject):
         self.state_changed.emit(RECORDING, session_id, started_at)
         return session_id
 
-    def stop(self) -> int | None:
+    def stop(self, timeout: float = SYNC_TIMEOUT_S) -> int | None:
         """Ends the recording: flushes pending rows, stamps ended_at.
-        Returns the session id, or None if there was nothing to stop."""
+        Returns the session id, or None if there was nothing to stop or the
+        writer failed (then the state becomes ERROR). `timeout`: the
+        longest it waits on the writer."""
         if self._state != RECORDING:
             return None
         session_id = self._session_id
         ended_at = self._clock()
         if self._last_saved_ts is not None and self._last_saved_ts > ended_at:
             ended_at = self._last_saved_ts
-        self._writer.end_session(session_id, ended_at=ended_at)
+        try:
+            self._writer.end_session(session_id, ended_at=ended_at, timeout=timeout)
+        except WriterError:
+            logger.exception("Stop failed: session #%d may not be fully saved", session_id)
+            self._enter_error()
+            return None
         self._state = PREVIEW
         self._session_id = None
         self._started_at = None
@@ -180,6 +209,29 @@ class RecordingController(QObject):
         self.state_changed.emit(PREVIEW, None, None)
         self.recording_finished.emit(session_id)
         return session_id
+
+    def _enter_error(self) -> None:
+        """Switch to ERROR (once). The open session, if any, is left for
+        next launch's crash recovery to close."""
+        if self._state == ERROR:
+            return
+        self._state = ERROR
+        self._session_id = None
+        self._started_at = None
+        self._last_saved_ts = None
+        self._label = None
+        self.state_changed.emit(ERROR, None, None)
+
+    def _check_writer(self) -> None:
+        """Called on every incoming batch: if the writer has failed since
+        the last one, switch to ERROR now rather than at Stop."""
+        if (
+            self._state != ERROR
+            and self._writer is not None
+            and self._writer.failed is not None
+        ):
+            logger.error("Recording stopped: the database writer has failed")
+            self._enter_error()
 
     # -- sink (called by the source, from any thread) --------------------------
 
@@ -195,6 +247,7 @@ class RecordingController(QObject):
     # -- main thread -------------------------------------------------------------
 
     def _handle_hr(self, readings: list[HrReading]) -> None:
+        self._check_writer()
         self.hr_received.emit(readings)
         rows = [(r.ts_ms, r.bpm, r.confidence) for r in readings if self._saves(r.ts_ms)]
         if rows:
@@ -202,6 +255,7 @@ class RecordingController(QObject):
             self._saved(rows)
 
     def _handle_imu(self, readings: list[ImuReading]) -> None:
+        self._check_writer()
         self.imu_received.emit(readings)
         rows = [
             (r.ts_ms, r.ax, r.ay, r.az, r.gx, r.gy, r.gz)
@@ -213,6 +267,7 @@ class RecordingController(QObject):
             self._saved(rows)
 
     def _handle_prediction(self, r: PredictionReading) -> None:
+        self._check_writer()
         self.prediction_received.emit(r)
         if self._saves(r.ts_ms - PREDICTION_WINDOW_MS):
             self._writer.insert_prediction(
