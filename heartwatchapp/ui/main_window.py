@@ -1,9 +1,16 @@
 """HeartWatchApp — the QMainWindow shell.
 
 Layout: sidebar (64px) · [ topbar / QStackedWidget / AI bar ] on the right.
+
+The window owns the live data source and the RecordingController
+(recording/controller.py), not the Live Monitor view: toggling the theme
+rebuilds every view, and a recording in progress must carry on through
+that.
 """
 
 from __future__ import annotations
+
+from collections.abc import Callable
 
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import (
@@ -17,6 +24,9 @@ from PySide6.QtWidgets import (
 from .. import config
 from ..data.writer import DatabaseWriter
 from ..llm.worker import LlmWorker
+from ..recording.controller import RecordingController
+from ..sources.base import DataSource
+from ..sources.dummy import DummySource
 from .ai_bar import AiBar
 from .dashboard import DashboardView
 from .live_monitor import LiveMonitorView
@@ -48,7 +58,12 @@ class HeartWatchApp(QMainWindow):
         theme: Theme,
         writer: DatabaseWriter | None = None,
         llm_worker: LlmWorker | None = None,
+        source: DataSource | None = None,
+        clock: Callable[[], int] | None = None,
     ):
+        """`source`: where live readings come from (default: DummySource).
+        `clock`: the recording controller's clock in epoch ms (default: the
+        real one); tests pass a fake source and clock."""
         super().__init__()
         self.theme = theme
         self.writer = writer
@@ -98,15 +113,21 @@ class HeartWatchApp(QMainWindow):
         h.addWidget(right, 1)
         self.setCentralWidget(root)
 
+        self.source = source if source is not None else DummySource()
+        self.recording = RecordingController(self.source, writer, clock=clock, parent=self)
+        self.recording.recording_finished.connect(self._on_data_changed)
+
         self._build_views()
         self._go_to_section(0)
+        # The Live Monitor previews straight away; nothing is saved until Start.
+        self.recording.start_preview()
 
     # -- views ---------------------------------------------------------
     def _build_views(self) -> None:
-        # Close out the previous Live Monitor's demo session (stamps ended_at)
-        # before its view -- and the session it opened -- is torn down.
+        # Unhook the old Live Monitor from the recording controller before it
+        # is torn down; the controller (and any recording) carries on.
         if getattr(self, "live", None) is not None:
-            self.live.shutdown()
+            self.live.detach()
 
         while self.stack.count():
             w = self.stack.widget(0)
@@ -114,7 +135,7 @@ class HeartWatchApp(QMainWindow):
             w.deleteLater()
 
         self.dashboard = DashboardView(self.theme)
-        self.live = LiveMonitorView(self.theme, self.writer)
+        self.live = LiveMonitorView(self.theme, self.recording)
         self.sessions = SessionsView(self.theme, self.llm_worker)
         self.ml = MlView(self.theme)
         self.settings = SettingsView(self.theme, self.writer)
@@ -132,17 +153,18 @@ class HeartWatchApp(QMainWindow):
             )
 
     def _on_data_changed(self) -> None:
-        """Seeding or deleting a session from the developer panel should be
-        reflected immediately without switching sections."""
+        """Seeding or deleting a session from the developer panel, or a
+        recording finishing, should be reflected immediately without
+        switching sections."""
         if hasattr(self.dashboard, "refresh"):
             self.dashboard.refresh()
         if hasattr(self.sessions, "refresh"):
             self.sessions.refresh()
 
     def shutdown(self) -> None:
-        """Called once, from app.aboutToQuit, before the writer thread stops."""
-        if getattr(self, "live", None) is not None:
-            self.live.shutdown()
+        """Called once, from app.aboutToQuit, before the writer thread stops:
+        a recording in progress is stopped and saved, then the source stops."""
+        self.recording.shutdown()
 
     def _pad(self, view: QWidget) -> QWidget:
         wrap = QWidget()

@@ -5,6 +5,7 @@ __pycache__/
 *.db-wal
 *.db-shm
 ml/models/
+ml/runs/
 .ua/
 eval_results/
 dev_logs/

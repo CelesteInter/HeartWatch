@@ -41,7 +41,7 @@ RECENT_SESSIONS = 3
 
 EMPTY_VALUE = "—"
 # No finished session in the whole database (a brand-new install, or only
-# the Live Monitor's still-recording session): the whole Dashboard is this
+# a session still recording): the whole Dashboard is this
 # one onboarding card. Finished sessions that just aren't in the range get
 # the "—" cards and NO_SESSIONS_TEXT instead.
 ONBOARDING_TITLE = "No sessions recorded yet"

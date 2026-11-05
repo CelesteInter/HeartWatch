@@ -14,6 +14,7 @@ from pathlib import Path
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from PySide6.QtCore import SignalInstance  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from heartwatchapp.data import db  # noqa: E402
@@ -21,6 +22,23 @@ from heartwatchapp.data.writer import DatabaseWriter  # noqa: E402
 from heartwatchapp.llm.worker import LlmWorker  # noqa: E402
 from heartwatchapp.ui.main_window import HeartWatchApp  # noqa: E402
 from heartwatchapp.ui.theme import Theme  # noqa: E402
+
+
+def connect_shutdown(
+    about_to_quit: SignalInstance,
+    window: HeartWatchApp,
+    writer: DatabaseWriter,
+    llm_worker: LlmWorker | None,
+) -> None:
+    """What runs when the app quits, in this order (Qt calls slots in the
+    order they were connected): the window first, which stops and saves a
+    recording in progress -- its last samples and ended_at still go
+    through the writer -- then the writer (flushes and closes the
+    database), then the LLM worker's loop."""
+    about_to_quit.connect(window.shutdown)
+    about_to_quit.connect(writer.stop)
+    if llm_worker is not None:
+        about_to_quit.connect(llm_worker.stop)
 
 
 def main() -> int:
@@ -42,6 +60,12 @@ def main() -> int:
     db.init_db()
     writer = DatabaseWriter()
     writer.start()
+    # Crash recovery: close any session left unfinished by a crash or a
+    # force-quit, before anything can start recording.
+    closed = writer.close_orphan_sessions()
+    logging.getLogger("heartwatch.recording").info(
+        "Closed %d unfinished session(s) left by an unclean exit", closed
+    )
 
     # Ollama may not be installed or running -- llm_worker.start() only
     # opens a background event loop, it never touches the network, so
@@ -52,9 +76,7 @@ def main() -> int:
     llm_worker.check_health()
 
     window = HeartWatchApp(theme, writer, llm_worker)
-    app.aboutToQuit.connect(window.shutdown)
-    app.aboutToQuit.connect(writer.stop)
-    app.aboutToQuit.connect(llm_worker.stop)
+    connect_shutdown(app.aboutToQuit, window, writer, llm_worker)
     window.show()
     return app.exec()
 

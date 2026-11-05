@@ -60,15 +60,23 @@ def _now_ms() -> int:
 
 # --- connection handling ---------------------------------------------
 
-def _connect(path: str | Path = DB_PATH) -> sqlite3.Connection:
-    """Open a connection with the pragmas HeartWatch requires.
+def _resolve(path: str | Path | None) -> str | Path:
+    """`path`, or the app's database (DB_PATH) if it's None. DB_PATH is read
+    here, when a function runs, not when this module is defined -- so
+    patching db.DB_PATH (as the tests do) redirects every default below."""
+    return path if path is not None else DB_PATH
+
+
+def _connect(path: str | Path | None = None) -> sqlite3.Connection:
+    """Open a connection with the pragmas HeartWatch requires. `path`
+    defaults to the app's database (DB_PATH, read at call time).
 
     Applied on every connection, not just at init -- SQLite disables
     foreign-key enforcement by default, so ON DELETE CASCADE silently
     does nothing unless `PRAGMA foreign_keys = ON` is set on the specific
     connection doing the delete.
     """
-    conn = sqlite3.connect(str(path))
+    conn = sqlite3.connect(str(_resolve(path)))
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode = WAL")     # readers don't block the writer
     conn.execute("PRAGMA synchronous  = NORMAL")  # safe under WAL, much faster
@@ -76,10 +84,10 @@ def _connect(path: str | Path = DB_PATH) -> sqlite3.Connection:
     return conn
 
 
-def init_db(path: str | Path = DB_PATH) -> None:
+def init_db(path: str | Path | None = None) -> None:
     """Create the database file if absent, apply schema.sql, and verify
     schema_meta.version matches what this build of the app expects."""
-    path = Path(path)
+    path = Path(_resolve(path))
     path.parent.mkdir(parents=True, exist_ok=True)
 
     with contextlib.closing(_connect(path)) as conn:
@@ -181,6 +189,45 @@ def insert_prediction(
     _insert_prediction_rows(conn, [(session_id, ts, predicted, confidence, model_version)])
 
 
+# Appended to the notes of a session closed by close_orphan_sessions().
+ORPHAN_NOTE = "Closed on next launch (the app did not exit cleanly)."
+_SAMPLE_TABLES = ("hr_samples", "imu_samples", "predictions")
+
+
+def close_orphan_sessions(conn: sqlite3.Connection) -> int:
+    """Crash recovery, run once at startup before anything records: every
+    session with ended_at NULL (the app crashed or was force-quit while
+    recording) gets ended_at = its latest sample time across hr_samples,
+    imu_samples and predictions, or its started_at if it has no samples,
+    and ORPHAN_NOTE appended to its notes (kept if it already had some).
+    Never deletes anything. Returns how many sessions were closed.
+
+    Assumes only one copy of the app runs at a time: a second copy would
+    close the first one's live recording."""
+    orphans = conn.execute(
+        "SELECT id, started_at FROM sessions WHERE ended_at IS NULL ORDER BY id"
+    ).fetchall()
+    for session_id, started_at in orphans:
+        # Newest row per table via the (session_id, ts) index; not a SQL
+        # aggregate, see tests/test_queries.py's structural guard.
+        latest = [
+            row[0]
+            for table in _SAMPLE_TABLES
+            for row in conn.execute(
+                f"SELECT ts FROM {table} WHERE session_id = ? ORDER BY ts DESC LIMIT 1",
+                (session_id,),
+            )
+        ]
+        ended_at = max(latest) if latest else started_at
+        conn.execute(
+            "UPDATE sessions SET ended_at = ?, "
+            "notes = CASE WHEN notes IS NULL OR notes = '' THEN ? ELSE notes || ' ' || ? END "
+            "WHERE id = ?",
+            (ended_at, ORPHAN_NOTE, ORPHAN_NOTE, session_id),
+        )
+    return len(orphans)
+
+
 def delete_session(conn: sqlite3.Connection, session_id: int) -> None:
     """Deletes the session; CASCADE removes its samples and predictions.
     Requires PRAGMA foreign_keys = ON on this connection (set by _connect())."""
@@ -242,7 +289,7 @@ def list_sessions(
     return out
 
 
-def get_session_timeline(session_id: int, path: str | Path = DB_PATH) -> dict:
+def get_session_timeline(session_id: int, path: str | Path | None = None) -> dict:
     """Backs the per-session detail view.
 
     Returns {"session": {...}, "hr": [(ts, bpm), ...],
@@ -255,8 +302,8 @@ def get_session_timeline(session_id: int, path: str | Path = DB_PATH) -> dict:
     needs -- the IMU series here is (ts, ax, ay, az, gx, gy, gz) tuples
     instead. HR and predictions match the (ts, value) shape as described.
 
-    `path` defaults to the app's real database; tests pass a fixture path
-    instead, same as init_db() and get_db_info() already do.
+    `path` defaults to the app's database (DB_PATH, read at call time);
+    tests pass a fixture path instead, same as init_db() and get_db_info().
     """
     with contextlib.closing(_connect(path)) as conn:
         session_row = conn.execute(
@@ -311,10 +358,10 @@ def export_training_csv(session_ids: list[int], path: str) -> int:
 
 # --- developer-panel helpers -------------------------------------------
 
-def get_db_info(path: str | Path = DB_PATH) -> dict:
+def get_db_info(path: str | Path | None = None) -> dict:
     """File path, file size on disk, row counts per table, schema version.
     Backs the Settings developer panel's 'Database info' control."""
-    path = Path(path)
+    path = Path(_resolve(path))
     table_names = ["sessions", "imu_samples", "hr_samples", "predictions"]
     with contextlib.closing(_connect(path)) as conn:
         row_counts = {

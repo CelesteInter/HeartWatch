@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     started_at   INTEGER NOT NULL,          -- epoch milliseconds
     ended_at     INTEGER,                   -- NULL while still recording
     device_id    TEXT,                      -- BLE address, or 'demo'
-    label        TEXT,                      -- walking / running / idle / ...
+    label        TEXT,                      -- activity picked at Start (ml CLASSES), NULL = no label
     accel_scale  REAL NOT NULL,             -- multiply raw count by this to get g
     gyro_scale   REAL NOT NULL,             -- multiply raw count by this to get dps
     notes        TEXT

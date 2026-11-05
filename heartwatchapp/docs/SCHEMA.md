@@ -20,7 +20,8 @@ keep the IMU rows lined up — every row in these tables is a real,
 independently-timed measurement.
 
 Everything hangs off a **session**: one row in `sessions` per recording run
-("start monitoring" to "stop monitoring", or one seeded demo). Delete a
+(Live Monitor **Start** to **Stop**, or one seeded demo). Launching the app
+creates no session; the Live Monitor's preview is never saved. Delete a
 session and its samples go with it — see "Cascading deletes" below.
 
 ## Tables
@@ -33,12 +34,31 @@ One row per recording run.
 |---|---|---|
 | `id` | INTEGER PK | Session id. Everything else references this. |
 | `started_at` | INTEGER | Epoch milliseconds when the session began. |
-| `ended_at` | INTEGER, nullable | Epoch milliseconds when it ended. **NULL means the session is still live** — that's how the app tells a recording session apart from a finished one, rather than a separate boolean flag. |
-| `device_id` | TEXT | BLE address of the watch, or `'demo'` for the Live Monitor's generator, or `'seed'` for a synthetic session created from the developer panel, or `'demo-session'` for the session `scripts/demo_session.py` builds. |
-| `label` | TEXT | Activity label: walking / running / idle / etc. Nullable — a live session doesn't know its label yet. |
+| `ended_at` | INTEGER, nullable | Epoch milliseconds when it ended. **NULL means the session is still live** — that's how the app tells a recording session apart from a finished one, rather than a separate boolean flag. A NULL left behind by a crash is filled in at the next launch (see "Crash recovery" below). |
+| `device_id` | TEXT | BLE address of the watch, or `'demo'` for a recording from the Live Monitor's dummy source (`sources/dummy.py`), or `'seed'` for a synthetic session created from the developer panel, or `'demo-session'` for the session `scripts/demo_session.py` builds. |
+| `label` | TEXT | Activity label picked at Start in the Live Monitor: one of `ml.inference.CLASSES` (`Sitting`, `Walking`, `Standing`, `Running`, exactly that spelling), or NULL for "No label". Seeded and demo sessions set their own. |
 | `accel_scale` | REAL | Multiply a raw `imu_samples.ax/ay/az` count by this to get g-force. |
 | `gyro_scale` | REAL | Multiply a raw `imu_samples.gx/gy/gz` count by this to get degrees/second. |
-| `notes` | TEXT | Free text, nullable. |
+| `notes` | TEXT | Free text, nullable. Crash recovery appends its note here (see below). |
+
+#### Crash recovery
+
+If the app crashes or is force-quit while recording, that session keeps
+`ended_at = NULL`, and every Dashboard and AI-bar number would leave it
+out forever. So once at every launch, before anything can record,
+`data/db.py`'s `close_orphan_sessions()` (run through the writer thread)
+closes each session with `ended_at IS NULL`:
+
+- `ended_at` becomes the session's latest sample time across
+  `hr_samples`, `imu_samples` and `predictions` (each found with
+  `ORDER BY ts DESC LIMIT 1` on its `(session_id, ts)` index), or its
+  `started_at` if it has no samples;
+- `notes` gets `Closed on next launch (the app did not exit cleanly).`
+  appended (after a space, if it already had a note);
+- nothing is ever deleted.
+
+This assumes one copy of the app at a time: a second copy would close the
+first one's live recording.
 
 ### `imu_samples`
 
@@ -81,6 +101,12 @@ One row per activity-classification window from the 1D CNN.
 | `predicted` | TEXT | The predicted activity label. |
 | `confidence` | REAL | Model confidence, 0–1. |
 | `model_version` | TEXT | Lets the same session's raw data be re-scored and compared across model builds without losing the original prediction. |
+
+Live predictions are **non-overlapping by design**: one every 5 seconds,
+each covering the 5 seconds before its `ts` (window = hop = 50 samples at
+10 Hz, `ml/spec.py`). That keeps the rule "a prediction owns
+`[ts − 5 s, ts)`" (`data/stats.py`) exact with no schema change. The 50%
+overlap used in training never reaches this table.
 
 Nothing calls `insert_prediction` yet — see "Open items" below.
 
@@ -151,7 +177,8 @@ The Dashboard and the Sessions filter ask for data by range ("Today",
   the day it started; one that starts at exactly midnight belongs to the
   new day.
 - Sessions still recording (`ended_at IS NULL`) are left out of every
-  Dashboard number until they end. The Sessions table lists them.
+  Dashboard number until they end. The Sessions table lists them. One left
+  open by a crash is closed at the next launch and counts from then on.
 
 SQL only selects the rows; every number is computed in `data/stats.py`
 (see the README's "Where numbers come from").
@@ -206,7 +233,7 @@ manual-inspection tool, not something on a hot path. Always add
   duration. No downsampling or archiving of old sessions is implemented.
   Fine at capstone scale (see `DATABASE_SETUP.md` for rough volume numbers);
   would need addressing before any long-term deployment.
-- **Live prediction writes.** `insert_prediction` / `predictions` exist and
-  work, but nothing calls them yet — the TFLite classifier isn't wired in.
-  The intent is for predictions to be written live during monitoring
-  (one row per inference window), not computed after the fact on review.
+- **Live prediction writes.** Predictions are written live while
+  recording (one row per 5-second window, through the recording
+  controller), but they come from the dummy classifier
+  (`model_version "demo-dummy"`) until the TFLite classifier is wired in.

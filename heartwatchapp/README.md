@@ -30,6 +30,39 @@ python -m heartwatchapp.main
 
 Always run from the **repo root** (`HeartWatch/`), not from inside `heartwatchapp/`.
 
+## Recording a session
+
+Launching the app doesn't record anything. The Live Monitor starts in
+**preview**: it shows live heart rate, motion and the predicted activity,
+marked *Preview · not saved*, the way a sports watch shows your heart rate
+before you start an activity (with the real watch, this is how you check
+the sensor has good contact first). Nothing is written to the database.
+
+- **Start** opens a new session and starts saving. The badge turns red and
+  counts up (*● Recording 3:12*).
+- Pick an **activity label** before Start if you like (*No label* is the
+  default and is stored as empty; otherwise Sitting, Walking, Standing or
+  Running). Labeled recordings are what the activity model will be trained
+  on. The picker is locked while recording.
+- **Stop** ends the session; it appears in Sessions and on the Dashboard
+  straight away. There's no minimum length.
+- **Quitting** while recording stops and saves the session first.
+- **Crash recovery:** if the app crashes or is force-quit mid-recording,
+  the next launch closes that session (its end time becomes its last
+  sample's time, or its start time if it has none) and adds the note
+  *"Closed on next launch (the app did not exit cleanly)."* Nothing is
+  deleted. This assumes only one copy of the app runs at a time.
+
+Only readings from after Start are saved. For activity predictions the
+whole 5-second window has to be inside the recording, so the first saved
+prediction is 5 seconds after Start. Toggling the theme mid-recording
+doesn't interrupt it.
+
+Where the pieces are: `sources/` produces readings (`DummySource` today;
+the real watch later plugs into the same `DataSource` interface),
+`recording/controller.py` decides what is saved and owns starting and
+ending sessions, and `ui/live_monitor.py` only displays.
+
 ## Ask about your data
 
 The bar at the bottom of the window answers simple questions about your
@@ -232,9 +265,10 @@ standing last week.").
 - Counting sessions by activity ("how many running sessions") isn't
   supported yet and gets a fixed reply (straight from the keyword parser
   when the question says "how many / number of ... sessions").
-- Session counts on the real database are inflated by the Live Monitor
-  opening a session every time the app starts (an open item, fixed with the
-  data-source abstraction).
+- Session counts on a real database from before Start/Stop recording still
+  include the session every earlier launch opened (they're closed by crash
+  recovery, so they count). A developer-panel tool to review and delete
+  old demo sessions is a separate follow-up.
 - Activity answers use simulated predictions until the real classifier
   lands (milestone 6).
 
@@ -372,8 +406,9 @@ checked for which number goes with which (only the peak rule applies).
      below; or
    - click Settings -> Developer -> **Seed demo session** (this *does*
      write to your real database -- seeded sessions include dummy
-     predictions, `model_version "demo-dummy"`), or leave the app running
-     on the Live Monitor for more than a minute.
+     predictions, `model_version "demo-dummy"`), or record for more than
+     a minute (Live Monitor -> **Start**, then **Stop**; this also writes
+     to your real database).
 4. In Sessions, double-click the session. In `llm` mode the terminal
    shows each pass or rejection and why.
 
@@ -424,6 +459,78 @@ real recordings.
 `gemma3:1b` -- 883 MB, 100% GPU-resident on Apple M2, 2048 context. Time
 to first token 0.04s; warm generation 0.11–0.94s; cold load 2.31s.
 Selected to fit an 8 GB development machine.
+
+## Activity model
+
+The app will guess **Sitting, Walking, Standing or Running** from the
+watch's motion sensor. Version 0 builds every step of that end to end, but
+**it is a plumbing test, not an accuracy result**: about 2.7 minutes of
+data, from one person, with one recording each of two activities
+(`HeartWatch/test/Standing.txt`, `HeartWatch/test/Walking.txt`). The model
+is **not wired into any screen**. The Live Monitor and the predictions
+table still use the `demo-dummy` generator.
+
+**The rule (all numbers in `ml/spec.py`):**
+
+1. **Read.** `ml/recording.py` turns a capture log (or a database session)
+   into motion readings in g and °/s. The captures' raw counts are scaled
+   by 1/16384 g and 1/131 °/s, the sensor's power-on defaults, because
+   firmware 1eabdb8 never sets the range. Database sessions from `seed`,
+   `demo` or `demo-session`, or with scales exactly (1.0, 1.0), are refused
+   because their stored scales are placeholders.
+2. **10 Hz.** Each 100 ms slot of raw readings is averaged into one sample
+   (`ml/preprocess.py`). Slots are half-open, `[t, t + 100 ms)`, and each
+   sample is stamped at its slot's end. An empty slot is a gap and is
+   never filled in.
+3. **Trim** the first and last 5 seconds of each recording.
+4. **Windows** of 5 seconds (50 samples), stamped at their end like the
+   predictions table. Any window touching a gap is dropped. Training uses
+   50% overlap; live predictions won't overlap (one every 5 s).
+5. **Normalize** with fixed constants: accel ÷ 4 g, gyro ÷ 500 °/s. Gravity
+   is kept. Heart rate isn't used.
+
+`preprocess.prepare()` runs steps 2–5. It is the only entry point, for
+training and the app alike. The model input is `(1, 50, 6)`.
+
+**Training environment** (separate from the app's `.venv`, so full
+TensorFlow stays out of the app). Run from the repo root:
+
+```bash
+/usr/local/bin/python3 -m venv heartwatchapp/ml/training/.venv
+heartwatchapp/ml/training/.venv/bin/python -m pip install -r heartwatchapp/ml/training/requirements-train.txt
+```
+
+**Train, export and report** (repo root):
+
+```bash
+heartwatchapp/ml/training/.venv/bin/python -m heartwatchapp.ml.training.train
+```
+
+This splits each recording by time (first 70% train, a one-window gap,
+then test), scores three simple baselines (majority class, a motion
+threshold, and a tilt-only check), trains a small 1D CNN on the training
+windows only, and writes:
+
+- `ml/models/har_cnn.tflite`, `model_meta.json` and `parity.npz`
+  (git-ignored). The metadata records the classes, rate, window,
+  normalization, the captures' SHA-256s, the git commit, the converter
+  path used, and the training venv's full `pip freeze`.
+- `ml/runs/<timestamp>/report.md` (git-ignored): window counts, baseline
+  and CNN scores (each with its raw window count), confusion matrices and
+  model size.
+
+**Check the model in the app environment** (LiteRT only, no TensorFlow):
+
+```bash
+heartwatchapp/.venv/bin/python -m heartwatchapp.ml.check_model
+```
+
+This prints how far LiteRT's answers are from Keras's on the saved test
+windows, and the inference time per window. The app's `ActivityClassifier.load()`
+refuses a model whose metadata (classes, rate, window, channels,
+normalization) differs from `ml/spec.py`. `tests/test_ml_pipeline.py`
+covers all of this, and skips the LiteRT parity check when no model has
+been exported.
 
 ## Where numbers come from
 
@@ -477,6 +584,9 @@ before touching `llm/` or the database.
 | Pass `keep_alive=-1` to keep the model warm | Use Ollama's default (5 min) and preload on focus at most once per period (`ui/ai_bar.py`) |
 | Tune the keyword parser on the held-out questions | Tune on `eval/ask_questions_dev.jsonl` only |
 | Trust an activity or time period the AI returns | Every activity or range the AI returns must appear in the question; never trust the model's guesses (`ask/evidence.py`) |
+| Create a session when the app launches | Sessions start only from Start (`recording/controller.py`); the Live Monitor previews without saving |
+| Run two copies of the app on the same database | Run one. Crash recovery at launch closes every unfinished session, so a second copy would close the first one's live recording |
+| Use `path=db.DB_PATH` as a default argument (fixed at import, so patching `db.DB_PATH` misses it) | Default to `None` and resolve at call time, as `data/db.py` does; tests patch `db.DB_PATH` (`tests/test_db_path.py`) |
 
 **Summary mode.** `HEARTWATCH_SUMMARY_MODE=plain` (the default) shows the
 app's own summary; `llm` brings back the AI path. Plain is the default
@@ -530,7 +640,7 @@ relaunch.
 
 ```
 heartwatchapp/
-├── main.py              app entry point
+├── main.py              app entry point (crash recovery at launch, quit order)
 ├── config.py            environment-variable settings (HEARTWATCH_DB_PATH, HEARTWATCH_SUMMARY_MODE, HEARTWATCH_ASK_MODE, HEARTWATCH_ASK_DEV)
 ├── ui/
 │   ├── main_window.py   QMainWindow shell (sidebar · topbar · stack · AI bar)
@@ -540,14 +650,19 @@ heartwatchapp/
 │   ├── widgets.py       Card, MetricCard, Badge, Divider, PlaceholderState
 │   ├── charts.py        Matplotlib DonutChart + scrolling LiveHRChart
 │   ├── dashboard.py     Section 1 — metric cards, activity breakdown, sessions (all via data/queries.py)
-│   ├── live_monitor.py  Section 2 — live HR + activity badge + IMU axes
+│   ├── live_monitor.py  Section 2 — Start/Stop row + live HR + activity badge + IMU axes (display only)
 │   ├── sessions.py      Section 3 — sessions list + SessionDetailDialog (chart, summary)
 │   ├── ml_view.py       Section 4 — stub (pipeline summary + matrix placeholder)
 │   ├── settings.py      Section 5 — stub (placeholder controls, theme toggle)
 │   ├── ai_bar.py        "Ask about your data" bar (rules answers at once; AI answers via LlmWorker)
 │   └── pending_request.py  waits for one background reply at a time, with a timeout
+├── sources/
+│   ├── base.py          DataSource interface + reading types (no Qt, no asyncio)
+│   └── dummy.py         DummySource: the fake HR / IMU / activity data until the real watch
+├── recording/
+│   └── controller.py    RecordingController: preview vs recording, starts and ends sessions
 ├── data/
-│   ├── db.py            SQLite connection + schema + writes and plain row reads
+│   ├── db.py            SQLite connection + schema + writes and plain row reads + crash recovery
 │   ├── queries.py       the one query layer: MetricRequest, run(), ranges, breakdown, session lists
 │   └── stats.py         every metric (average/peak HR, time per activity, totals) + session summaries
 ├── ask/                 the AI bar's question pipeline (no Qt)
@@ -569,7 +684,13 @@ heartwatchapp/
 │   ├── prompts.py       system prompts + session-summary and question-parser prompt text
 │   ├── validate.py      checks every generated summary before it's shown
 │   └── worker.py        Qt-thread bridge (sends checked replies to the GUI)
-├── ml/inference.py      TFLite activity classifier stub
+├── ml/
+│   ├── spec.py          every pipeline number (10 Hz, 50-sample window, trim, normalization)
+│   ├── recording.py     capture logs / DB sessions -> Recording in g and deg/s
+│   ├── preprocess.py    resample -> trim -> windows -> normalize (prepare())
+│   ├── inference.py     ActivityClassifier (LiteRT), metadata checks; CLASSES
+│   ├── check_model.py   LiteRT-vs-Keras parity and timing, app venv
+│   └── training/        own venv: dataset, baselines, train, export, report
 ├── scripts/
 │   ├── benchmark_ollama.py  standalone viability check, run by hand
 │   ├── demo_db.py           builds the demo session on a fresh DB (shared by the two below)
@@ -592,7 +713,11 @@ heartwatchapp/
     ├── test_ask_v11.py        typos, guard with typos, evidence check, summary, breakdown, suggestions
     ├── test_ask_regressions.py  the v1 wrong answers (each failed on ask-v1)
     ├── test_eval_ask.py       ask eval: real-DB refusal, scoring, rules-mode run
-    └── test_ai_bar.py         AI bar offscreen: answers, stale replies, timeout, preload
+    ├── test_ai_bar.py         AI bar offscreen: answers, stale replies, timeout, preload
+    ├── test_db_path.py        DB path defaults follow a patched db.DB_PATH; main window leaves the real DB alone
+    ├── test_ml_pipeline.py    activity model: spec, parser, resampling, windows, DB skew, guards, LiteRT parity
+    ├── test_recording.py      Start/Stop recording: nothing at launch, labels, windows, crash recovery, quit, theme
+    └── test_sources.py        sources/base.py stays Qt- and asyncio-free; DummySource schedule and values
 ```
 
 ## Build status
@@ -601,12 +726,13 @@ heartwatchapp/
 |---|---|---|
 | 1 | App shell (window, sidebar, topbar, stack, AI bar) | done |
 | 2 | Dashboard — cards / bars / donut / sessions (demo data) | done |
-| 3 | Live Monitor — dummy sine HR + IMU axes; also writes dummy activity predictions (`model_version "demo-dummy"`) until milestone 6 | done |
+| 3 | Live Monitor — dummy sine HR + IMU axes + dummy activity predictions (`model_version "demo-dummy"`) until milestone 6; preview, Start/Stop recording with an optional activity label, crash recovery | done |
 | 4 | "Ask about your data" bar — keyword parser + local model (gemma3:1b) fill a form; Python answers via `data/queries.py` | done (v1.1: typos, session summary, activity breakdown, evidence check, suggestions; see Known limitations) |
-| 5 | SQLite integration (replace demo data) | done for the Dashboard, Sessions and the AI bar (all through `data/queries.py`); the Live Monitor still streams dummy data |
-| 6 | BLE stream from ESP32-S3 + real TFLite inference | not started |
+| 5 | SQLite integration (replace demo data) | done for the Dashboard, Sessions and the AI bar (all through `data/queries.py`); the Live Monitor saves only what you record, from a swappable data source (`sources/`), still dummy data |
+| 6 | BLE stream from ESP32-S3 + real TFLite inference | BLE not started; activity-model pipeline v0 built (single-subject plumbing test, not wired into any screen; see Activity model) |
 | — | Session summaries | done — plain (Python-written) by default; AI phrasing via Ollama / gemma3:1b with `HEARTWATCH_SUMMARY_MODE=llm`, degrades to the plain summary otherwise |
 
 The Dashboard, Sessions and AI bar read the SQLite database. The Live Monitor's
-values come from dummy generators until step 6, and every activity prediction
-is from the dummy classifier (`model_version "demo-dummy"`) until then.
+values come from `DummySource` until step 6 swaps in the real watch, and every
+activity prediction is from the dummy classifier (`model_version "demo-dummy"`)
+until then. Only sessions recorded with Start/Stop are saved.
