@@ -1,5 +1,6 @@
 // Include libraries here
 #include <stdio.h>
+#include <inttypes.h>
 #include "driver/gpio.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -81,6 +82,12 @@ struct log {
 struct log *log_buffer;
 // Include a pointer to point to the current log
 uint32_t log_pointer = 0;
+typedef enum {
+    LOG_IDLE,
+    LOG_RECORDING,
+    LOG_STOPPED
+} log_state_t;
+log_state_t log_state = LOG_IDLE;
 
 // Main application loop
 void app_main(void)
@@ -298,14 +305,25 @@ void app_main(void)
 
                 if (button2State == 0) {
                     ESP_ERROR_CHECK(sh1107_set_cursor(0, 0));
-                    if (display == 4) {
-                        for (uint32_t i = 0; i < log_pointer; i++) {
-                            uint16_t temp = (log_buffer+i)->ax;
-                            ESP_LOGI(MAIN, "log%d: ax: %d", i, temp);
-                        }
+                    if (log_state == LOG_IDLE) {
+                        log_pointer = 0;
+                        log_state = LOG_RECORDING;
+                        display = 4;
+                    } else if (log_state == LOG_RECORDING) {
+                        log_state = LOG_STOPPED;
                         display = 0;
                     } else {
-                        display = 4;   
+                        for (uint32_t i = 0; i < log_pointer; i++) {
+                            struct log *entry = &log_buffer[i];
+                            ESP_LOGI(MAIN,
+                                     "log%" PRIu32 ": ax: %d, ay: %d, az: %d, "
+                                     "gx: %d, gy: %d, gz: %d, heartrate: %u",
+                                     i, entry->ax, entry->ay, entry->az,
+                                     entry->gx, entry->gy, entry->gz,
+                                     entry->heartrate);
+                        }
+                        log_state = LOG_IDLE;
+                        display = 0;
                     }
                     
                     // displayHUD(display); eventually revert to shutoff
@@ -431,7 +449,7 @@ void app_main(void)
         }
 
         // Display 4 - temporary logging
-        if (display == 4) {
+        if (log_state == LOG_RECORDING) {
             ESP_ERROR_CHECK(sh1107_set_cursor(0,7));
             ESP_ERROR_CHECK(sh1107_print("Logging..."));
             struct log new_log = {
