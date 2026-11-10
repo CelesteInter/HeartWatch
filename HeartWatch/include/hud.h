@@ -9,4 +9,4 @@
  * 2 = Heartrate Sensing Display
  * 3 = Motion Sensing Screen (IMU)
  */
- void displayHUD(int selection);
+ //void displayHUD(int selection);
