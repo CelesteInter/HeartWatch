@@ -108,7 +108,7 @@ static void disp_flush(lv_disp_drv_t *disp_drv, const lv_area_t *area, lv_color_
 
 bool notify_lvgl_flush_ready(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_io_event_data_t *edata, void *user_ctx) {
     lv_disp_drv_t *disp_driver = (lv_disp_drv_t *)user_ctx;
-    lv_disp_flush_ready(disp_driver); // NOW it is safe to tell LVGL to continue!
+    lv_disp_flush_ready(disp_driver);
     return false;
 }
 
@@ -124,11 +124,11 @@ void init_lvgl(void) {
     // Register the display driver with LVGL
     static lv_disp_drv_t disp_drv;
     lv_disp_drv_init(&disp_drv);
-    disp_drv.hor_res = 240; // Adjust to 320 if you have a rectangular ST7789
+    disp_drv.hor_res = 240;
     disp_drv.ver_res = 240;
     disp_drv.flush_cb = disp_flush;
     disp_drv.draw_buf = &draw_buf;
-    disp_drv.user_data = panel_handle; // Pass your global screen handle here
+    disp_drv.user_data = panel_handle;
     lv_disp_drv_register(&disp_drv);
 
     // Tell the ESP-IDF SPI driver to fire our callback when DMA finishes
@@ -145,8 +145,6 @@ void init_lvgl(void) {
     esp_timer_handle_t tick_timer;
     ESP_ERROR_CHECK(esp_timer_create(&tick_timer_args, &tick_timer));
     ESP_ERROR_CHECK(esp_timer_start_periodic(tick_timer, 1000));
-
-
 }
 
 
