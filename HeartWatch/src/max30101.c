@@ -40,19 +40,23 @@ esp_err_t max30101_init(i2c_master_dev_handle_t handle)
     ESP_ERROR_CHECK(max30101_write(handle, MAX30101_REG_OVF_COUNTER, 0x00)); // Reset overflow counter
     ESP_ERROR_CHECK(max30101_write(handle, MAX30101_REG_FIFO_RD_PTR, 0x00)); // Reset read pointer
     ESP_ERROR_CHECK(max30101_write(handle, MAX30101_REG_SPO2_CONFIG, 0x27)); // Set SPO2 Configuration
-    ESP_ERROR_CHECK(max30101_write(handle, MAX30101_REG_LED1_PA, 0x24)); // Pulse 7.2mA - adjustable LED
-    ESP_ERROR_CHECK(max30101_write(handle, MAX30101_REG_LED2_PA, 0x24)); // Pulse 7.2mA - adjustable LED
-    ESP_ERROR_CHECK(max30101_write(handle, MAX30101_REG_MODE_CONFIG, 0x02)); // Set to HR only
+    ESP_ERROR_CHECK(max30101_write(handle, MAX30101_REG_LED1_PA, 0x24)); // Pulse 7.2mA
+    ESP_ERROR_CHECK(max30101_write(handle, MAX30101_REG_LED2_PA, 0x24)); // Pulse 7.2mA
+    ESP_ERROR_CHECK(max30101_write(handle, MAX30101_REG_LED3_PA, 0x24)); // Pulse 7.2mA
+    ESP_ERROR_CHECK(max30101_write(handle, MAX30101_REG_MULTI_LED_CTRL1, 0x21)); // Red, then IR
+    ESP_ERROR_CHECK(max30101_write(handle, MAX30101_REG_MULTI_LED_CTRL2, 0x03)); // Green
+    ESP_ERROR_CHECK(max30101_write(handle, MAX30101_REG_MODE_CONFIG, 0x07)); // Set to multi-LED mode
     return ESP_OK;
 }
 
-bool max30101_read_ir(i2c_master_dev_handle_t handle, uint32_t *ir_value)
+bool max30101_read_sample(i2c_master_dev_handle_t handle,
+                          max30101_sample_t *sample)
 {
     uint8_t write_pointer;
     uint8_t read_pointer;
-    uint8_t fifo_data[3];
+    uint8_t fifo_data[9];
 
-    if (ir_value == NULL) {
+    if (sample == NULL) {
         return false;
     }
 
@@ -62,11 +66,16 @@ bool max30101_read_ir(i2c_master_dev_handle_t handle, uint32_t *ir_value)
         return false;
     }
 
-    if (max30101_read(handle, MAX30101_REG_FIFO_DATA, fifo_data, sizeof(fifo_data)) != ESP_OK) {
+    if (max30101_read(handle, MAX30101_REG_FIFO_DATA, fifo_data,
+                      sizeof(fifo_data)) != ESP_OK) {
         return false;
     }
 
-    *ir_value = ((uint32_t)(fifo_data[0] & 0x03) << 16) |
-                ((uint32_t)fifo_data[1] << 8) | fifo_data[2];
+    sample->red = ((uint32_t)(fifo_data[0] & 0x03) << 16) |
+                  ((uint32_t)fifo_data[1] << 8) | fifo_data[2];
+    sample->ir = ((uint32_t)(fifo_data[3] & 0x03) << 16) |
+                 ((uint32_t)fifo_data[4] << 8) | fifo_data[5];
+    sample->green = ((uint32_t)(fifo_data[6] & 0x03) << 16) |
+                    ((uint32_t)fifo_data[7] << 8) | fifo_data[8];
     return true;
 }

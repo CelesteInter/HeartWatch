@@ -177,8 +177,7 @@ esp_err_t sh1107_set_cursor(uint8_t column, uint8_t row)
     return ESP_OK;
 }
 
-// Write a single character to buffer
-esp_err_t sh1107_write_char(char character)
+static void sh1107_write_char_to_buffer(char character)
 {
     // Linebreak (adjust cursor to next row)
     if (character == '\n') {
@@ -213,7 +212,12 @@ esp_err_t sh1107_write_char(char character)
         cursor_row = 0;
     }
 
-    // Send buffer to sh1107
+}
+
+// Write a single character to buffer
+esp_err_t sh1107_write_char(char character)
+{
+    sh1107_write_char_to_buffer(character);
     return sh1107_flush();
 }
 
@@ -227,12 +231,11 @@ esp_err_t sh1107_print(const char *text)
 
     // read until EOF
     while (*text != '\0') {
-        ESP_RETURN_ON_ERROR(sh1107_write_char(*text), TAG, "OLED write failed");
+        sh1107_write_char_to_buffer(*text);
         text++;
     }
 
-    // Return ok
-    return ESP_OK;
+    return sh1107_flush();
 }
 
 // Sleep mode

@@ -41,7 +41,7 @@
 
 // Tags
 static const char *TAG = "mpu";
-static const char *HEART_RATE_TAG = "heartrate";
+static const char *MAX30101_TAG = "max30101";
 static const char *MAIN = "esp";
 
  // Button Setup (Polling Style)
@@ -54,12 +54,29 @@ uint32_t lastDebounceTime2 = 0;
 
 int display = 0;
 
-// Variables to hold MAX30101 values
-uint32_t ir_value;
-uint32_t ir_baseline = 0;
-uint32_t signal_peak = 0;
-int64_t last_beat_ms = 0;
+// Variables to hold the MAX30101 raw LED values
+max30101_sample_t max30101_sample;
+uint32_t green_baseline = 0;
+uint32_t green_peak = 0;
+uint32_t previous_green_signal = 0;
+uint32_t prior_green_signal = 0;
+int64_t previous_green_signal_ms = 0;
+int64_t last_green_beat_ms = 0;
 uint16_t stable_bpm = 0;
+uint16_t bpm_history[3] = {0};
+uint8_t bpm_history_count = 0;
+
+static void reset_heart_rate_state(void)
+{
+    green_baseline = 0;
+    green_peak = 0;
+    previous_green_signal = 0;
+    prior_green_signal = 0;
+    previous_green_signal_ms = 0;
+    last_green_beat_ms = 0;
+    stable_bpm = 0;
+    bpm_history_count = 0;
+}
 
 uint32_t millis() {
     return (uint32_t)(esp_timer_get_time() / 1000ULL);
@@ -195,7 +212,7 @@ void app_main(void)
     ESP_ERROR_CHECK(i2c_master_bus_add_device(bus_handle, &i2c_heartrate_config, &heartrate_handle));
 
     ESP_ERROR_CHECK(max30101_init(heartrate_handle));
-    ESP_LOGI(HEART_RATE_TAG, "MAX30101 initialized");
+    ESP_LOGI(MAX30101_TAG, "MAX30101 initialized");
 
 
     // Main polling loop
@@ -207,49 +224,110 @@ void app_main(void)
             lastDebounceTime1 = millis();
         }
 
-        // Read heart rate BPM
+        // Read the MAX30101 samples and calculate BPM from the green channel.
         for (int sample_count = 0; sample_count < 8; sample_count++) {
-            if (!max30101_read_ir(heartrate_handle, &ir_value)) {
+            if (!max30101_read_sample(heartrate_handle, &max30101_sample)) {
                 break;
             }
 
-            if (ir_baseline == 0) {
-                ir_baseline = ir_value;
-            }
-
-            // Track the slowly changing DC level and detect a pulse above it.
-            // baseline value for ambient light
-            ir_baseline = (ir_baseline * 31 + ir_value) / 32;
-            // Remove slowly changing DC component from IR reading
-            uint32_t signal = ir_value > ir_baseline ? ir_value - ir_baseline : 0;
-            // update previous peak from signal
-            uint32_t previous_peak = signal_peak;
-            // update current signal peak (new peak is 7/8ths old peak, 1/8th new signal)
-            signal_peak = (signal_peak * 7 + signal) / 8;
-            // Get the current time on the timer (ms)
+            uint32_t green = max30101_sample.green;
             int64_t now_ms = esp_timer_get_time() / 1000;
 
-            /**
-             * Heartbeat recognition
-             * ir_value > 5000 : assumes finger is present, otherwise ambient pulse
-             * signal > 500 : pulse must be at least 500 counts above baseline
-             * signal > previous_peak * 3/2 : signal must be 50% larger than recent smoothed level
-             * now_ms - last_beat_ms > 300 : theoretical maximum limit for BPM of 200 
-             *          -> 60000 ms in a minute / 300 ms = 200 BPM
-             */
-            if (ir_value > 5000 && signal > 500 && signal > previous_peak * 3 / 2 &&
-                now_ms - last_beat_ms > 300) {
-                // Ensure first detected pulse doesn't provide a data entry
-                if (last_beat_ms != 0) {
-                    // calculate bpm (60000 ms in a minute / change in time)
-                    uint32_t bpm = 60000 / (now_ms - last_beat_ms);
-                    // If the BPM is reasonable, print it to log
-                    if (bpm >= 40 && bpm <= 220) {
-                        stable_bpm = bpm;
-                    } 
+            if (green < 1000) {
+                reset_heart_rate_state();
+                continue;
+            }
+
+            if (green_baseline == 0) {
+                green_baseline = green;
+            }
+
+            green_baseline = (green_baseline * 31 + green) / 32;
+            uint32_t raw_signal = green > green_baseline
+                ? green - green_baseline
+                : green_baseline - green;
+            uint32_t signal = (previous_green_signal * 3 + raw_signal) / 4;
+
+            if (signal > green_peak) {
+                green_peak = signal;
+            } else {
+                green_peak = (green_peak * 15) / 16;
+            }
+
+            uint32_t threshold = green_peak / 4;
+            if (threshold < 8) {
+                threshold = 8;
+            }
+
+            bool is_peak = prior_green_signal < previous_green_signal &&
+                           previous_green_signal >= signal &&
+                           previous_green_signal > threshold;
+            if (is_peak &&
+                (last_green_beat_ms == 0 ||
+                 previous_green_signal_ms - last_green_beat_ms > 450)) {
+                int64_t beat_ms = previous_green_signal_ms;
+                if (last_green_beat_ms != 0) {
+                    int64_t interval_ms = beat_ms - last_green_beat_ms;
+                    if (interval_ms >= 400 && interval_ms <= 2000) {
+                        uint16_t bpm = (uint16_t)(60000 / interval_ms);
+                        if (bpm >= 30 && bpm <= 150) {
+                            if (bpm_history_count < 3) {
+                                bpm_history[bpm_history_count++] = bpm;
+                            } else {
+                                bpm_history[0] = bpm_history[1];
+                                bpm_history[1] = bpm_history[2];
+                                bpm_history[2] = bpm;
+                            }
+
+                            if (bpm_history_count == 1) {
+                                stable_bpm = bpm;
+                                if (display == 2) {
+                                    ESP_LOGI(MAX30101_TAG,
+                                             "Heart rate candidate: %" PRIu16 " BPM",
+                                             stable_bpm);
+                                }
+                            }
+
+                            if (bpm_history_count == 3) {
+                                uint16_t minimum = bpm_history[0];
+                                uint16_t maximum = bpm_history[0];
+                                uint16_t total = bpm_history[0];
+                                for (int i = 1; i < 3; i++) {
+                                    if (bpm_history[i] < minimum) {
+                                        minimum = bpm_history[i];
+                                    }
+                                    if (bpm_history[i] > maximum) {
+                                        maximum = bpm_history[i];
+                                    }
+                                    total += bpm_history[i];
+                                }
+
+                                if (maximum - minimum <= 30) {
+                                    stable_bpm = total / 3;
+                                    if (display == 2) {
+                                        ESP_LOGI(MAX30101_TAG,
+                                                 "Heart rate: %" PRIu16 " BPM",
+                                                 stable_bpm);
+                                    }
+                                }
+                            }
+                        } else {
+                            bpm_history_count = 0;
+                        }
+                    } else if (interval_ms > 2000) {
+                        bpm_history_count = 0;
+                    }
                 }
-                // update last time for beat
-                last_beat_ms = now_ms;
+                last_green_beat_ms = beat_ms;
+            }
+
+            prior_green_signal = previous_green_signal;
+            previous_green_signal = signal;
+            previous_green_signal_ms = now_ms;
+
+            if (last_green_beat_ms != 0 &&
+                now_ms - last_green_beat_ms > 2500) {
+                reset_heart_rate_state();
             }
         } // End of while loop
 
@@ -270,7 +348,6 @@ void app_main(void)
                 button1State = reading1;
 
                 if (button1State == 0) {
-                    ESP_ERROR_CHECK(sh1107_set_cursor(0, 0));
                     display++;
                     if (display > 3) {
                         display = 0;
@@ -302,6 +379,7 @@ void app_main(void)
         if ((millis() - lastDebounceTime2) > debounceDelay) {
             if (reading2 != button2State) {
                 button2State = reading2;
+                ESP_ERROR_CHECK(sh1107_clear());
 
                 if (button2State == 0) {
                     ESP_ERROR_CHECK(sh1107_set_cursor(0, 0));
@@ -311,7 +389,7 @@ void app_main(void)
                         display = 4;
                     } else if (log_state == LOG_RECORDING) {
                         log_state = LOG_STOPPED;
-                        display = 0;
+                        display = 5;
                     } else {
                         for (uint32_t i = 0; i < log_pointer; i++) {
                             struct log *entry = &log_buffer[i];
@@ -322,6 +400,8 @@ void app_main(void)
                                      entry->gx, entry->gy, entry->gz,
                                      entry->heartrate);
                         }
+                        reset_heart_rate_state();
+                        ESP_ERROR_CHECK(max30101_init(heartrate_handle));
                         log_state = LOG_IDLE;
                         display = 0;
                     }
@@ -332,94 +412,28 @@ void app_main(void)
         }
         lastButton2State = reading2;
 
+        static uint32_t last_display_refresh = 0;
+        if (millis() - last_display_refresh >= 100) {
+            last_display_refresh = millis();
 
-        // Display 1: Timer
-        if (display == 1) {
-            unsigned long time = millis() % 10000;
-            char message[14];
-            snprintf(message, sizeof(message),"     %lu   ", time);
-            ESP_ERROR_CHECK(sh1107_set_cursor(5, 7));
-            ESP_ERROR_CHECK(sh1107_print(message));
+            // Display 1: Timer
+            if (display == 1) {
+                unsigned long time = millis() % 10000;
+                char message[14];
+                snprintf(message, sizeof(message),"     %lu   ", time);
+                ESP_ERROR_CHECK(sh1107_set_cursor(5, 7));
+                ESP_ERROR_CHECK(sh1107_print(message));
+            }
+
+            // Display 2: Heart rate from green LED
+            if (display == 2) {
+                char message[32];
+                snprintf(message, sizeof(message),
+                         " HR: %" PRIu16 " BPM", stable_bpm);
+                ESP_ERROR_CHECK(sh1107_set_cursor(5, 7));
+                ESP_ERROR_CHECK(sh1107_print(message));
+            }
         }
-
-
-        // Display 2: Heart Rate
-        if (display == 2) {
-        
-            bool sensor_success = false;
-            int read_attempts = 0;
-
-            // Try to read the buffer
-            // while (max30101_read_ir(heartrate_handle, &ir_value)) {
-            //     sensor_success = true;
-            //     read_attempts++;
-            //      // Read heart rate BPM
-            //     for (int sample_count = 0; sample_count < 8; sample_count++) {
-            //         if (!max30101_read_ir(heartrate_handle, &ir_value)) {
-            //             break;
-            //         }
-
-            //         if (ir_baseline == 0) {
-            //             ir_baseline = ir_value;
-            //         }
-
-            //         // Track the slowly changing DC level and detect a pulse above it.
-            //         // baseline value for ambient light
-            //         ir_baseline = (ir_baseline * 31 + ir_value) / 32;
-            //         // Remove slowly changing DC component from IR reading
-            //         uint32_t signal = ir_value > ir_baseline ? ir_value - ir_baseline : 0;
-            //         // update previous peak from signal
-            //         uint32_t previous_peak = signal_peak;
-            //         // update current signal peak (new peak is 7/8ths old peak, 1/8th new signal)
-            //         signal_peak = (signal_peak * 7 + signal) / 8;
-            //         // Get the current time on the timer (ms)
-            //         int64_t now_ms = esp_timer_get_time() / 1000;
-
-            //         /**
-            //          * Heartbeat recognition
-            //          * ir_value > 5000 : assumes finger is present, otherwise ambient pulse
-            //          * signal > 500 : pulse must be at least 500 counts above baseline
-            //          * signal > previous_peak * 3/2 : signal must be 50% larger than recent smoothed level
-            //          * now_ms - last_beat_ms > 300 : theoretical maximum limit for BPM of 200 
-            //          *          -> 60000 ms in a minute / 300 ms = 200 BPM
-            //          */
-            //         if (ir_value > 5000 && signal > 500 && signal > previous_peak * 3 / 2 &&
-            //             now_ms - last_beat_ms > 300) {
-            //             // Ensure first detected pulse doesn't provide a data entry
-            //             if (last_beat_ms != 0) {
-            //                 // calculate bpm (60000 ms in a minute / change in time)
-            //                 uint32_t bpm = 60000 / (now_ms - last_beat_ms);
-            //                 // If the BPM is reasonable, print it to log
-            //                 if (bpm >= 40 && bpm <= 220) {
-            //                     stable_bpm = bpm;
-            //                 } 
-            //             }
-            //             // update last time for beat
-            //             last_beat_ms = now_ms;
-            //         }
-            //     }
-            // } // End of while loop
-
-            // // Reset on failure (used for when buffer fills up after changing displays)
-            // static uint32_t fail_count = 0;
-            // if (!sensor_success) {
-            //     fail_count++;
-            //     if (fail_count > 20) { // If it fails for 20 consecutive loops (~200ms)
-            //         ESP_LOGW(HEART_RATE_TAG, "Sensor locked up. Re-initializing...");
-            //         max30101_init(heartrate_handle); // Reset the sensor hardware
-            //         fail_count = 0;                  // Reset counter
-            //     }
-            // } else {
-            //     fail_count = 0; // Reset counter on successful read
-            // }
-
-            // Display Data to screen
-            //ESP_LOGE(HEART_RATE_TAG, "(stable) Heart rate: %3lu BPM", (unsigned long)stable_bpm);
-            char message[32];
-            snprintf(message, sizeof(message),"  HR: %3lu BPM", (unsigned long)stable_bpm);
-            ESP_ERROR_CHECK(sh1107_set_cursor(5, 7));
-            ESP_ERROR_CHECK(sh1107_print(message));
-        }   
 
 
 
@@ -459,11 +473,18 @@ void app_main(void)
                 .gx = gyro_x, // 64
                 .gy = gyro_y, // 80
                 .gz = gyro_z, // 96
-                .heartrate = stable_bpm // 104
+                .heartrate = (uint8_t)stable_bpm // 104
             };
             if (log_pointer < LOG_CAPACITY) {
                 log_buffer[log_pointer++] = new_log;
             }
+        }
+
+        // Display 5 - temporary logging
+        if (log_state == LOG_STOPPED) {
+            // ESP_ERROR_CHECK(sh1107_clear());
+            ESP_ERROR_CHECK(sh1107_set_cursor(0,7));
+            ESP_ERROR_CHECK(sh1107_print("Log Saved! Press again to print to serial!"));
         }
 
         
