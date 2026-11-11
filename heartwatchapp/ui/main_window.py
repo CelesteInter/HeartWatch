@@ -116,6 +116,9 @@ class HeartWatchApp(QMainWindow):
         self.source = source if source is not None else DummySource()
         self.recording = RecordingController(self.source, writer, clock=clock, parent=self)
         self.recording.recording_finished.connect(self._on_data_changed)
+        # The developer panel never offers the session being recorded for
+        # deletion, so it re-lists sessions when a recording starts or stops.
+        self.recording.state_changed.connect(self._on_recording_state_changed)
 
         self._build_views()
         self._go_to_section(0)
@@ -138,7 +141,9 @@ class HeartWatchApp(QMainWindow):
         self.live = LiveMonitorView(self.theme, self.recording)
         self.sessions = SessionsView(self.theme, self.llm_worker)
         self.ml = MlView(self.theme)
-        self.settings = SettingsView(self.theme, self.writer)
+        self.settings = SettingsView(
+            self.theme, self.writer, recording_session_id=lambda: self.recording.session_id
+        )
         self.settings.theme_toggled.connect(self._toggle_theme)
         self.settings.data_changed.connect(self._on_data_changed)
 
@@ -160,6 +165,9 @@ class HeartWatchApp(QMainWindow):
             self.dashboard.refresh()
         if hasattr(self.sessions, "refresh"):
             self.sessions.refresh()
+
+    def _on_recording_state_changed(self, *_args) -> None:
+        self.settings.recording_changed()
 
     def shutdown(self) -> None:
         """Called once, from app.aboutToQuit, before the writer thread stops:

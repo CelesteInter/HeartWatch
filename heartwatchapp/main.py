@@ -15,10 +15,10 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from PySide6.QtCore import SignalInstance  # noqa: E402
-from PySide6.QtWidgets import QApplication  # noqa: E402
+from PySide6.QtWidgets import QApplication, QMessageBox  # noqa: E402
 
 from heartwatchapp.data import db  # noqa: E402
-from heartwatchapp.data.writer import DatabaseWriter  # noqa: E402
+from heartwatchapp.data.writer import DatabaseWriter, WriterError  # noqa: E402
 from heartwatchapp.llm.worker import LlmWorker  # noqa: E402
 from heartwatchapp.ui.main_window import HeartWatchApp  # noqa: E402
 from heartwatchapp.ui.theme import Theme  # noqa: E402
@@ -35,10 +35,36 @@ def connect_shutdown(
     recording in progress -- its last samples and ended_at still go
     through the writer -- then the writer (flushes and closes the
     database), then the LLM worker's loop."""
-    about_to_quit.connect(window.shutdown)
-    about_to_quit.connect(writer.stop)
+    about_to_quit.connect(window.shutdown)  # waits on the writer <= 2 s
+    about_to_quit.connect(writer.stop)  # <= 2 s (QUIT_TIMEOUT_S)
     if llm_worker is not None:
         about_to_quit.connect(llm_worker.stop)
+
+
+def recover_orphans(writer: DatabaseWriter) -> bool:
+    """Crash recovery: closes any session left unfinished by a crash or a
+    force-quit, before anything can start recording. This is also the
+    first time the app waits on the writer, so if the database can't be
+    opened it shows up here: the error is logged, a message box says so,
+    and False tells main() to exit instead of starting a window that
+    can't save anything."""
+    try:
+        closed = writer.close_orphan_sessions()
+    except WriterError as exc:
+        logging.getLogger("heartwatch.db").error(
+            "Startup: the database couldn't be opened: %s", exc
+        )
+        QMessageBox.critical(
+            None,
+            "HeartWatch",
+            "The database couldn't be opened, so HeartWatch can't start.\n\n"
+            f"{exc}",
+        )
+        return False
+    logging.getLogger("heartwatch.recording").info(
+        "Closed %d unfinished session(s) left by an unclean exit", closed
+    )
+    return True
 
 
 def main() -> int:
@@ -60,12 +86,9 @@ def main() -> int:
     db.init_db()
     writer = DatabaseWriter()
     writer.start()
-    # Crash recovery: close any session left unfinished by a crash or a
-    # force-quit, before anything can start recording.
-    closed = writer.close_orphan_sessions()
-    logging.getLogger("heartwatch.recording").info(
-        "Closed %d unfinished session(s) left by an unclean exit", closed
-    )
+    if not recover_orphans(writer):
+        writer.stop()
+        return 1
 
     # Ollama may not be installed or running -- llm_worker.start() only
     # opens a background event loop, it never touches the network, so

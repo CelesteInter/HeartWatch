@@ -26,7 +26,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..ml.inference import CLASSES
-from ..recording.controller import RECORDING, RecordingController
+from ..recording.controller import ERROR, RECORDING, RecordingController
 from ..sources.base import HrReading, ImuReading, PredictionReading
 from .charts import LiveHRChart
 from .theme import Theme
@@ -38,6 +38,7 @@ from .widgets import Badge, Card, heading, muted
 _RAW_COUNT_SCALE = 1000
 
 PREVIEW_TEXT = "Preview · not saved"
+ERROR_TEXT = "Recording stopped: database error. Restart the app."
 NO_LABEL_TEXT = "No label"
 START_TEXT = "Start"
 STOP_TEXT = "Stop"
@@ -244,6 +245,12 @@ class LiveMonitorView(QWidget):
             )
             self._show_elapsed()
             self._elapsed_timer.start(1000)
+        elif state == ERROR:
+            self._elapsed_timer.stop()
+            self.status_label.setStyleSheet(
+                f"color: {self.theme.c('danger')}; font-weight: 600;"
+            )
+            self.status_label.setText(ERROR_TEXT)
         else:
             self._elapsed_timer.stop()
             self.status_label.setStyleSheet(f"color: {self.theme.c('text_muted')};")

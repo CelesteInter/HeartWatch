@@ -4,6 +4,8 @@ the Developer group is real and backs the SQLite acceptance demo."""
 from __future__ import annotations
 
 import datetime
+import logging
+from collections.abc import Callable
 
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
@@ -22,9 +24,31 @@ from PySide6.QtWidgets import (
 )
 
 from ..data import db
-from ..data.writer import DatabaseWriter
+from ..data.writer import DatabaseWriter, WriterError
 from .theme import Theme
 from .widgets import Badge, Card, Divider, heading, muted
+
+
+logger = logging.getLogger("heartwatch.db")
+
+WRITER_ERROR_TITLE = "Database error"
+
+
+def deletable_sessions(sessions: list[dict], recording_id: int | None) -> list[dict]:
+    """The sessions the delete picker offers: all but the one being
+    recorded. Deleting it would remove the session row under samples that
+    are still arriving, and their next save would fail."""
+    return [s for s in sessions if s["id"] != recording_id]
+
+
+def delete_refusal(session_id: int, recording_id: int | None) -> str | None:
+    """Why `session_id` can't be deleted right now, or None if it can."""
+    if recording_id is not None and session_id == recording_id:
+        return (
+            f"Session #{session_id} is being recorded. Stop the recording "
+            "before deleting it."
+        )
+    return None
 
 
 def _left(w: QWidget) -> QWidget:
@@ -46,10 +70,15 @@ class SettingsView(QWidget):
         theme: Theme,
         writer: DatabaseWriter | None = None,
         parent: QWidget | None = None,
+        recording_session_id: Callable[[], int | None] | None = None,
     ):
+        """`recording_session_id`: returns the id of the session being
+        recorded right now (None: not recording); that session is never
+        offered for deletion. Default: never recording."""
         super().__init__(parent)
         self.theme = theme
         self.writer = writer
+        self._recording_session_id = recording_session_id or (lambda: None)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -205,13 +234,31 @@ class SettingsView(QWidget):
         card.body().addWidget(_left(refresh_btn))
 
         self._refresh_session_picker()
-        self._refresh_info()
+        # On construction (including a theme rebuild) a writer error goes in
+        # the info box rather than a pop-up.
+        self._refresh_info(report=False)
         return card
+
+    def recording_changed(self) -> None:
+        """A recording started or stopped: re-list the deletable sessions."""
+        self._refresh_session_picker()
+
+    def _report_writer_error(self, action: str, exc: WriterError) -> None:
+        logger.warning("Developer panel: %s failed: %s", action, exc)
+        QMessageBox.warning(
+            self,
+            WRITER_ERROR_TITLE,
+            f"Couldn't {action}: {exc}\n\nRestart the app to keep saving data.",
+        )
 
     def _on_seed_clicked(self) -> None:
         if self.writer is None:
             return
-        session_id = self.writer.seed_demo_session()
+        try:
+            session_id = self.writer.seed_demo_session()
+        except WriterError as exc:
+            self._report_writer_error("seed a demo session", exc)
+            return
         self._seed_status.setText(f"Seeded session #{session_id}.")
         self._refresh_session_picker()
         self._refresh_info()
@@ -219,7 +266,8 @@ class SettingsView(QWidget):
 
     def _refresh_session_picker(self) -> None:
         self._session_picker.clear()
-        for s in db.list_sessions(limit=200):
+        sessions = deletable_sessions(db.list_sessions(limit=200), self._recording_session_id())
+        for s in sessions:
             started = datetime.datetime.fromtimestamp(s["started_at"] / 1000)
             text = f"#{s['id']} · {s['label'] or 'Unlabeled'} · {started:%b %d, %H:%M}"
             self._session_picker.addItem(text, s["id"])
@@ -229,6 +277,11 @@ class SettingsView(QWidget):
             return
         session_id = self._session_picker.currentData()
         label = self._session_picker.currentText()
+        refusal = delete_refusal(session_id, self._recording_session_id())
+        if refusal is not None:
+            QMessageBox.warning(self, "Delete session", refusal)
+            self._refresh_session_picker()
+            return
         reply = QMessageBox.question(
             self,
             "Delete session",
@@ -239,7 +292,18 @@ class SettingsView(QWidget):
         )
         if reply != QMessageBox.Yes:
             return
-        self.writer.delete_session(session_id)
+        # Checked again after the question: a recording may have started
+        # while it was open.
+        refusal = delete_refusal(session_id, self._recording_session_id())
+        if refusal is not None:
+            QMessageBox.warning(self, "Delete session", refusal)
+            self._refresh_session_picker()
+            return
+        try:
+            self.writer.delete_session(session_id)
+        except WriterError as exc:
+            self._report_writer_error(f"delete session #{session_id}", exc)
+            return
         self._seed_status.setText(f"Deleted session #{session_id}.")
         self._refresh_session_picker()
         self._refresh_info()
@@ -247,7 +311,11 @@ class SettingsView(QWidget):
 
     def _on_run_query_clicked(self) -> None:
         if self.writer is not None:
-            self.writer.flush_and_wait()
+            try:
+                self.writer.flush_and_wait()
+            except WriterError as exc:
+                self._report_writer_error("run the query", exc)
+                return
         rows = db.run_samples_flat_demo(limit=20)
         self._query_table.setRowCount(len(rows))
         for row_idx, row in enumerate(rows):
@@ -255,9 +323,19 @@ class SettingsView(QWidget):
             for col, value in enumerate(values):
                 self._query_table.setItem(row_idx, col, QTableWidgetItem(str(value)))
 
-    def _refresh_info(self) -> None:
+    def _refresh_info(self, report: bool = True) -> None:
+        """`report` False: a writer error is shown in the info box, not a
+        pop-up (used while the panel is being built)."""
         if self.writer is not None:
-            self.writer.flush_and_wait()  # any buffered inserts land before we count
+            try:
+                self.writer.flush_and_wait()  # any buffered inserts land before we count
+            except WriterError as exc:
+                if report:
+                    self._report_writer_error("refresh the database info", exc)
+                else:
+                    logger.warning("Developer panel: database info not refreshed: %s", exc)
+                self._info_label.setText(f"Database error: {exc}\nRestart the app.")
+                return
         info = db.get_db_info()
         lines = [
             f"path            {info['path']}",
