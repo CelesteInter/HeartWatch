@@ -54,8 +54,8 @@ uint32_t lastDebounceTime2 = 0;
 
 int display = 0;
 
-// Variables to hold the MAX30101 raw LED values
-max30101_sample_t max30101_sample;
+// Variable to hold the MAX30101 green LED value
+uint32_t green_value;
 uint32_t green_baseline = 0;
 uint32_t green_peak = 0;
 uint32_t previous_green_signal = 0;
@@ -226,11 +226,11 @@ void app_main(void)
 
         // Read the MAX30101 samples and calculate BPM from the green channel.
         for (int sample_count = 0; sample_count < 8; sample_count++) {
-            if (!max30101_read_sample(heartrate_handle, &max30101_sample)) {
+            if (!max30101_read_green(heartrate_handle, &green_value)) {
                 break;
             }
 
-            uint32_t green = max30101_sample.green;
+            uint32_t green = green_value;
             int64_t now_ms = esp_timer_get_time() / 1000;
 
             if (green < 1000) {
