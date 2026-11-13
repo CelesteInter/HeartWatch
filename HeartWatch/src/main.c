@@ -44,6 +44,8 @@
 #define WHO_AM_I 0x75
 #define MPU_REG_ACCEL_XOUT_H 0x3B
 
+
+
 // LGVL
 esp_lcd_panel_io_handle_t io_handle = NULL;
 esp_lcd_panel_handle_t panel_handle = NULL;
@@ -150,19 +152,17 @@ void init_lvgl(void) {
 
 
 // Tags
-// static const char *TAG = "mpu";
-// static const char *HEART_RATE_TAG = "heartrate";
- //static const char *MAIN = "esp";
+//static const char *TAG = "mpu";
+//static const char *HEART_RATE_TAG = "heartrate";
+//static const char *MAIN = "esp";
 
- // Button Setup (Polling Style)
-// int button1State = 1;
-// int lastButton1State = 1;
-// uint32_t lastDebounceTime1 = 0;
+// Button Setup (Polling Style)
+int button1State = 1;
+int lastButton1State = 1;
+uint32_t lastDebounceTime1 = 0;
 // int button2State = 1;
 // int lastButton2State = 1;
 // uint32_t lastDebounceTime2 = 0;
-
-// int display = 0;
 
 // // Variables to hold MAX30101 values
 // uint32_t ir_value;
@@ -175,7 +175,7 @@ uint32_t millis() {
     return (uint32_t)(esp_timer_get_time() / 1000ULL);
 }
 
-// // Logging
+// Logging
 // struct log {
 //     int16_t ax; // 16
 //     int16_t ay; // 32
@@ -186,9 +186,7 @@ uint32_t millis() {
 //     uint8_t heartrate; // 104
 //     // pad 8 bits = 112 bits or 14 bytes
 // };
-
-//#define LOG_CAPACITY 500000
-
+// #define LOG_CAPACITY 500000
 // struct log *log_buffer;
 // // Include a pointer to point to the current log
 // uint32_t log_pointer = 0;
@@ -200,12 +198,40 @@ void app_main(void)
 {
     // Set up the ST7789 screen
     init_st7789();
-
     init_lvgl();
+    //setupScreens();
 
-    lv_obj_t *label = lv_label_create(lv_scr_act());
-    lv_label_set_text(label, "Heartwatch\nSystem Online!");
-    lv_obj_align(label, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_t *screen_bootup = lv_obj_create(NULL);
+    lv_obj_t *screen_home = lv_obj_create(NULL);
+    lv_obj_t *screen_active = lv_obj_create(NULL);
+
+    //lv_scr_load(screen_bootup);
+
+    lv_obj_t *intro_label = lv_label_create(screen_bootup);
+    lv_label_set_text(intro_label, "Heartwatch\nSystem Online!\nV2");
+    lv_obj_align(intro_label, LV_ALIGN_CENTER, 0, 0);
+
+    lv_obj_t *intro_led = lv_led_create(screen_bootup);
+    lv_led_set_color(intro_led, lv_color_hex(0xff0080));
+    lv_led_set_brightness(intro_led, 255);
+    lv_obj_align(intro_led, LV_ALIGN_CENTER, 40, 40);
+
+
+    lv_obj_t *home_label = lv_label_create(screen_home);
+    lv_label_set_text(home_label, "Heartwatch\nHome Screen");
+    lv_obj_align(home_label, LV_ALIGN_CENTER, 0, 0);
+
+    lv_obj_t *active_label = lv_label_create(screen_active);
+    lv_label_set_text(active_label, "Heartwatch\nActive Screen");
+    lv_obj_align(active_label, LV_ALIGN_CENTER, 0, 0);
+
+
+    //lv_obj_t *label = lv_label_create(lv_scr_act());
+    //lv_label_set_text(label, "Heartwatch\nSystem Online!");
+    //lv_obj_align(label, LV_ALIGN_CENTER, 0, 0);
+
+    
+    uint8_t current_display = SCREEN_BOOTUP;
 
     //ESP_ERROR_CHECK(esp_lcd_panel_disp_sleep(panel_handle, true));
 
@@ -218,25 +244,27 @@ void app_main(void)
     // ESP_ERROR_CHECK(log_buffer != NULL ? ESP_OK : ESP_ERR_NO_MEM);
 
     // Button Config
-    // gpio_reset_pin(BUTTON_1_PIN);
-    // gpio_set_direction(BUTTON_1_PIN, GPIO_MODE_INPUT);
-    // gpio_set_pull_mode(BUTTON_1_PIN, GPIO_PULLUP_ONLY);
+     gpio_reset_pin(BUTTON_1_PIN);
+     gpio_set_direction(BUTTON_1_PIN, GPIO_MODE_INPUT);
+     gpio_set_pull_mode(BUTTON_1_PIN, GPIO_PULLUP_ONLY);
 
-    // gpio_reset_pin(BUTTON_2_PIN);
-    // gpio_set_direction(BUTTON_2_PIN, GPIO_MODE_INPUT);
-    // gpio_set_pull_mode(BUTTON_2_PIN, GPIO_PULLUP_ONLY);
+     gpio_reset_pin(BUTTON_2_PIN);
+     gpio_set_direction(BUTTON_2_PIN, GPIO_MODE_INPUT);
+     gpio_set_pull_mode(BUTTON_2_PIN, GPIO_PULLUP_ONLY);
 
-    // const uint32_t debounceDelay = 10; // 50ms delay
+    const uint32_t debounceDelay = 10; // 50ms delay
+
     
-    // // Heartbeat LED config
-	// gpio_config_t led_config = {
-	// 	.pin_bit_mask = 1ULL << USER_LED,
-	// 	.mode = GPIO_MODE_OUTPUT,
-	// 	.pull_up_en = GPIO_PULLUP_DISABLE,
-	// 	.pull_down_en = GPIO_PULLDOWN_DISABLE,
-	// 	.intr_type = GPIO_INTR_DISABLE,
-	// };
-	// gpio_config(&led_config);
+    
+    // Heartbeat LED config
+	gpio_config_t led_config = {
+		.pin_bit_mask = 1ULL << USER_LED,
+		.mode = GPIO_MODE_OUTPUT,
+		.pull_up_en = GPIO_PULLUP_DISABLE,
+		.pull_down_en = GPIO_PULLDOWN_DISABLE,
+		.intr_type = GPIO_INTR_DISABLE,
+	};
+	gpio_config(&led_config);
 
     // // SPI & sh1107 (OLED Display)
     // sh1107_config_t display_config = {
@@ -321,10 +349,35 @@ void app_main(void)
 	while (1) {
             
         // Button Debounce Routines and Display Selections
-        // int reading1 = gpio_get_level(BUTTON_1_PIN);
-        // if (reading1 != lastButton1State) {
-        //     lastDebounceTime1 = millis();
-        // }
+        int reading1 = gpio_get_level(BUTTON_1_PIN);
+        if (reading1 != lastButton1State) {
+            lastDebounceTime1 = millis();
+        }
+         if ((millis() - lastDebounceTime1) > debounceDelay) {
+            if (reading1 != button1State) {
+                button1State = reading1;
+
+                if (button1State == 0) {
+                    current_display++;
+                    if (current_display > 2) {
+                        current_display = 0;
+                    }   
+               
+                    switch (current_display) {
+                        case SCREEN_BOOTUP: // Bootup Screen 
+                             lv_scr_load(screen_bootup);
+                        break;
+                        case SCREEN_HOME: // Clock Display
+                            lv_scr_load(screen_home);
+                        break;
+                        case SCREEN_ACTIVE: // Heart Rate & Movement Data
+                            lv_scr_load(screen_active);
+                        break;
+                    }
+                }
+            }
+        }
+        lastButton1State = reading1;
 
         // // Read heart rate BPM
         // for (int sample_count = 0; sample_count < 8; sample_count++) {
@@ -384,35 +437,8 @@ void app_main(void)
         // gyro_y = (int16_t)(((uint16_t)mpu_data[10] << 8) | mpu_data[11]);
         // gyro_z = (int16_t)(((uint16_t)mpu_data[12] << 8) | mpu_data[13]);
 
-        // if ((millis() - lastDebounceTime1) > debounceDelay) {
-        //     if (reading1 != button1State) {
-        //         button1State = reading1;
-
-        //         if (button1State == 0) {
-        //             ESP_ERROR_CHECK(sh1107_set_cursor(0, 0));
-        //             display++;
-        //             if (display > 3) {
-        //                 display = 0;
-        //             }   
-               
-        //             switch (display) {
-        //                 case 0: // Bootup Screen 
-        //                     displayHUD(0);
-        //                 break;
-        //                 case 1: // Clock Display
-        //                     displayHUD(1);
-        //                 break;
-        //                 case 2: // Heart Rate
-        //                     displayHUD(2);
-        //                 break;
-        //                 case 3: // Motion Tracking
-        //                     displayHUD(3);
-        //                 break; 
-        //             }
-        //         }
-        //     }
-        // }
-        // lastButton1State = reading1;
+       
+        
         // int reading2 = gpio_get_level(BUTTON_2_PIN);
         // if (reading2 != lastButton2State) {
         //     lastDebounceTime2 = millis();
@@ -423,161 +449,157 @@ void app_main(void)
         //         button2State = reading2;
 
         //         if (button2State == 0) {
-        //             ESP_ERROR_CHECK(sh1107_set_cursor(0, 0));
-        //             if (display == 4) {
+        //             if (current_display == 2) {
         //                 for (uint32_t i = 0; i < log_pointer; i++) {
         //                     uint16_t temp = (log_buffer+i)->ax;
         //                     ESP_LOGI(MAIN, "log%d: ax: %d", i, temp);
         //                 }
-        //                 display = 0;
         //             } else {
-        //                 display = 4;   
+        //                 ESP_ERROR_CHECK(esp_lcd_panel_disp_sleep(panel_handle, true));
         //             }
-                    
-        //             // displayHUD(display); eventually revert to shutoff
         //         }
         //     }
         // }
         // lastButton2State = reading2;
 
 
-        // // Display 1: Timer
-        // if (display == 1) {
-        //     unsigned long time = millis() % 10000;
-        //     char message[14];
-        //     snprintf(message, sizeof(message),"     %lu   ", time);
-        //     ESP_ERROR_CHECK(sh1107_set_cursor(5, 7));
-        //     ESP_ERROR_CHECK(sh1107_print(message));
-        // }
+        // // // Display 1: Timer
+        // // if (display == 1) {
+        // //     unsigned long time = millis() % 10000;
+        // //     char message[14];
+        // //     snprintf(message, sizeof(message),"     %lu   ", time);
+        // //     ESP_ERROR_CHECK(sh1107_set_cursor(5, 7));
+        // //     ESP_ERROR_CHECK(sh1107_print(message));
+        // // }
 
 
-        // // Display 2: Heart Rate
-        // if (display == 2) {
+        // // // Display 2: Heart Rate
+        // // if (display == 2) {
         
-        //     bool sensor_success = false;
-        //     int read_attempts = 0;
+        // //     bool sensor_success = false;
+        // //     int read_attempts = 0;
 
-        //     // Try to read the buffer
-        //     // while (max30101_read_ir(heartrate_handle, &ir_value)) {
-        //     //     sensor_success = true;
-        //     //     read_attempts++;
-        //     //      // Read heart rate BPM
-        //     //     for (int sample_count = 0; sample_count < 8; sample_count++) {
-        //     //         if (!max30101_read_ir(heartrate_handle, &ir_value)) {
-        //     //             break;
-        //     //         }
+        // //     // Try to read the buffer
+        // //     // while (max30101_read_ir(heartrate_handle, &ir_value)) {
+        // //     //     sensor_success = true;
+        // //     //     read_attempts++;
+        // //     //      // Read heart rate BPM
+        // //     //     for (int sample_count = 0; sample_count < 8; sample_count++) {
+        // //     //         if (!max30101_read_ir(heartrate_handle, &ir_value)) {
+        // //     //             break;
+        // //     //         }
 
-        //     //         if (ir_baseline == 0) {
-        //     //             ir_baseline = ir_value;
-        //     //         }
+        // //     //         if (ir_baseline == 0) {
+        // //     //             ir_baseline = ir_value;
+        // //     //         }
 
-        //     //         // Track the slowly changing DC level and detect a pulse above it.
-        //     //         // baseline value for ambient light
-        //     //         ir_baseline = (ir_baseline * 31 + ir_value) / 32;
-        //     //         // Remove slowly changing DC component from IR reading
-        //     //         uint32_t signal = ir_value > ir_baseline ? ir_value - ir_baseline : 0;
-        //     //         // update previous peak from signal
-        //     //         uint32_t previous_peak = signal_peak;
-        //     //         // update current signal peak (new peak is 7/8ths old peak, 1/8th new signal)
-        //     //         signal_peak = (signal_peak * 7 + signal) / 8;
-        //     //         // Get the current time on the timer (ms)
-        //     //         int64_t now_ms = esp_timer_get_time() / 1000;
+        // //     //         // Track the slowly changing DC level and detect a pulse above it.
+        // //     //         // baseline value for ambient light
+        // //     //         ir_baseline = (ir_baseline * 31 + ir_value) / 32;
+        // //     //         // Remove slowly changing DC component from IR reading
+        // //     //         uint32_t signal = ir_value > ir_baseline ? ir_value - ir_baseline : 0;
+        // //     //         // update previous peak from signal
+        // //     //         uint32_t previous_peak = signal_peak;
+        // //     //         // update current signal peak (new peak is 7/8ths old peak, 1/8th new signal)
+        // //     //         signal_peak = (signal_peak * 7 + signal) / 8;
+        // //     //         // Get the current time on the timer (ms)
+        // //     //         int64_t now_ms = esp_timer_get_time() / 1000;
 
-        //     //         /**
-        //     //          * Heartbeat recognition
-        //     //          * ir_value > 5000 : assumes finger is present, otherwise ambient pulse
-        //     //          * signal > 500 : pulse must be at least 500 counts above baseline
-        //     //          * signal > previous_peak * 3/2 : signal must be 50% larger than recent smoothed level
-        //     //          * now_ms - last_beat_ms > 300 : theoretical maximum limit for BPM of 200 
-        //     //          *          -> 60000 ms in a minute / 300 ms = 200 BPM
-        //     //          */
-        //     //         if (ir_value > 5000 && signal > 500 && signal > previous_peak * 3 / 2 &&
-        //     //             now_ms - last_beat_ms > 300) {
-        //     //             // Ensure first detected pulse doesn't provide a data entry
-        //     //             if (last_beat_ms != 0) {
-        //     //                 // calculate bpm (60000 ms in a minute / change in time)
-        //     //                 uint32_t bpm = 60000 / (now_ms - last_beat_ms);
-        //     //                 // If the BPM is reasonable, print it to log
-        //     //                 if (bpm >= 40 && bpm <= 220) {
-        //     //                     stable_bpm = bpm;
-        //     //                 } 
-        //     //             }
-        //     //             // update last time for beat
-        //     //             last_beat_ms = now_ms;
-        //     //         }
-        //     //     }
-        //     // } // End of while loop
+        // //     //         /**
+        // //     //          * Heartbeat recognition
+        // //     //          * ir_value > 5000 : assumes finger is present, otherwise ambient pulse
+        // //     //          * signal > 500 : pulse must be at least 500 counts above baseline
+        // //     //          * signal > previous_peak * 3/2 : signal must be 50% larger than recent smoothed level
+        // //     //          * now_ms - last_beat_ms > 300 : theoretical maximum limit for BPM of 200 
+        // //     //          *          -> 60000 ms in a minute / 300 ms = 200 BPM
+        // //     //          */
+        // //     //         if (ir_value > 5000 && signal > 500 && signal > previous_peak * 3 / 2 &&
+        // //     //             now_ms - last_beat_ms > 300) {
+        // //     //             // Ensure first detected pulse doesn't provide a data entry
+        // //     //             if (last_beat_ms != 0) {
+        // //     //                 // calculate bpm (60000 ms in a minute / change in time)
+        // //     //                 uint32_t bpm = 60000 / (now_ms - last_beat_ms);
+        // //     //                 // If the BPM is reasonable, print it to log
+        // //     //                 if (bpm >= 40 && bpm <= 220) {
+        // //     //                     stable_bpm = bpm;
+        // //     //                 } 
+        // //     //             }
+        // //     //             // update last time for beat
+        // //     //             last_beat_ms = now_ms;
+        // //     //         }
+        // //     //     }
+        // //     // } // End of while loop
 
-        //     // // Reset on failure (used for when buffer fills up after changing displays)
-        //     // static uint32_t fail_count = 0;
-        //     // if (!sensor_success) {
-        //     //     fail_count++;
-        //     //     if (fail_count > 20) { // If it fails for 20 consecutive loops (~200ms)
-        //     //         ESP_LOGW(HEART_RATE_TAG, "Sensor locked up. Re-initializing...");
-        //     //         max30101_init(heartrate_handle); // Reset the sensor hardware
-        //     //         fail_count = 0;                  // Reset counter
-        //     //     }
-        //     // } else {
-        //     //     fail_count = 0; // Reset counter on successful read
-        //     // }
+        // //     // // Reset on failure (used for when buffer fills up after changing displays)
+        // //     // static uint32_t fail_count = 0;
+        // //     // if (!sensor_success) {
+        // //     //     fail_count++;
+        // //     //     if (fail_count > 20) { // If it fails for 20 consecutive loops (~200ms)
+        // //     //         ESP_LOGW(HEART_RATE_TAG, "Sensor locked up. Re-initializing...");
+        // //     //         max30101_init(heartrate_handle); // Reset the sensor hardware
+        // //     //         fail_count = 0;                  // Reset counter
+        // //     //     }
+        // //     // } else {
+        // //     //     fail_count = 0; // Reset counter on successful read
+        // //     // }
 
-        //     // Display Data to screen
-        //     //ESP_LOGE(HEART_RATE_TAG, "(stable) Heart rate: %3lu BPM", (unsigned long)stable_bpm);
-        //     char message[32];
-        //     snprintf(message, sizeof(message),"  HR: %3lu BPM", (unsigned long)stable_bpm);
-        //     ESP_ERROR_CHECK(sh1107_set_cursor(5, 7));
-        //     ESP_ERROR_CHECK(sh1107_print(message));
-        // }   
+        // //     // Display Data to screen
+        // //     //ESP_LOGE(HEART_RATE_TAG, "(stable) Heart rate: %3lu BPM", (unsigned long)stable_bpm);
+        // //     char message[32];
+        // //     snprintf(message, sizeof(message),"  HR: %3lu BPM", (unsigned long)stable_bpm);
+        // //     ESP_ERROR_CHECK(sh1107_set_cursor(5, 7));
+        // //     ESP_ERROR_CHECK(sh1107_print(message));
+        // // }   
 
 
 
-        // // Display 3: MPU
-        // if (display == 3) {
-        //     static uint32_t last_mpu_read = 0;
+        // // // Display 3: MPU
+        // // if (display == 3) {
+        // //     static uint32_t last_mpu_read = 0;
 
-        //     if (millis() - last_mpu_read > 250) {
-        //         last_mpu_read = millis();
+        // //     if (millis() - last_mpu_read > 250) {
+        // //         last_mpu_read = millis();
             
                 
-        //         char message[128];
-        //         snprintf(message, sizeof(message),
-        //                 "   AX:%6d\n   AY:%6d\n   AZ:%6d\n   GX:%6d\n   GY:%6d\n   GZ:%6d", 
-        //                  accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z);
-        //         ESP_ERROR_CHECK(sh1107_set_cursor(0, 7));
-        //         ESP_ERROR_CHECK(sh1107_print(message));
+        // //         char message[128];
+        // //         snprintf(message, sizeof(message),
+        // //                 "   AX:%6d\n   AY:%6d\n   AZ:%6d\n   GX:%6d\n   GY:%6d\n   GZ:%6d", 
+        // //                  accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z);
+        // //         ESP_ERROR_CHECK(sh1107_set_cursor(0, 7));
+        // //         ESP_ERROR_CHECK(sh1107_print(message));
                 
-        //         //MPU reading output to error log
-        //         ESP_LOGI(TAG, "WHO_AM_I: 0x%02X", mpu_data[0]);
-        //         register_address = MPU_REG_ACCEL_XOUT_H;
-        //         result = i2c_master_transmit_receive(mpu_handle, &register_address, 1,
-        //                                                 mpu_data, sizeof(mpu_data), -1);
-        //         ESP_ERROR_CHECK(result);
-        //         ESP_LOG_BUFFER_HEXDUMP(TAG, mpu_data, sizeof(mpu_data), ESP_LOG_INFO);
-        //     }
-        // }
+        // //         //MPU reading output to error log
+        // //         ESP_LOGI(TAG, "WHO_AM_I: 0x%02X", mpu_data[0]);
+        // //         register_address = MPU_REG_ACCEL_XOUT_H;
+        // //         result = i2c_master_transmit_receive(mpu_handle, &register_address, 1,
+        // //                                                 mpu_data, sizeof(mpu_data), -1);
+        // //         ESP_ERROR_CHECK(result);
+        // //         ESP_LOG_BUFFER_HEXDUMP(TAG, mpu_data, sizeof(mpu_data), ESP_LOG_INFO);
+        // //     }
+        // // }
 
-        // // Display 4 - temporary logging
-        // if (display == 4) {
-        //     ESP_ERROR_CHECK(sh1107_set_cursor(0,7));
-        //     ESP_ERROR_CHECK(sh1107_print("Logging..."));
-        //     struct log new_log = {
-        //         .ax = accel_x, // 16
-        //         .ay = accel_y, // 32
-        //         .az = accel_z, // 48
-        //         .gx = gyro_x, // 64
-        //         .gy = gyro_y, // 80
-        //         .gz = gyro_z, // 96
-        //         .heartrate = stable_bpm // 104
-        //     };
-        //     if (log_pointer < LOG_CAPACITY) {
-        //         log_buffer[log_pointer++] = new_log;
-        //     }
-        // }
+        // // // Display 4 - temporary logging
+        // // if (display == 4) {
+        // //     ESP_ERROR_CHECK(sh1107_set_cursor(0,7));
+        // //     ESP_ERROR_CHECK(sh1107_print("Logging..."));
+        // //     struct log new_log = {
+        // //         .ax = accel_x, // 16
+        // //         .ay = accel_y, // 32
+        // //         .az = accel_z, // 48
+        // //         .gx = gyro_x, // 64
+        // //         .gy = gyro_y, // 80
+        // //         .gz = gyro_z, // 96
+        // //         .heartrate = stable_bpm // 104
+        // //     };
+        // //     if (log_pointer < LOG_CAPACITY) {
+        // //         log_buffer[log_pointer++] = new_log;
+        // //     }
+        // // }
 
         
-        // // Print to serial
-        // // ESP_LOGI(TAG, "AX: %d, AY: %d, AZ: %d, GX: %d, GY: %d, GZ: %d\n", accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z);
-        // // ESP_LOGI(MAIN, "\n");
+        // // // Print to serial
+        // // // ESP_LOGI(TAG, "AX: %d, AY: %d, AZ: %d, GX: %d, GY: %d, GZ: %d\n", accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z);
+        // // // ESP_LOGI(MAIN, "\n");
         lv_timer_handler();
         vTaskDelay(pdMS_TO_TICKS(10));
 	}
