@@ -44,12 +44,80 @@
 #define WHO_AM_I 0x75
 #define MPU_REG_ACCEL_XOUT_H 0x3B
 
-
+ // MPU
+uint8_t mpu_data[MPU_DATA_LENGTH];
+uint8_t register_address;
+esp_err_t result;
+int16_t ax, ay, az;
+int16_t gx, gy, gz;
+i2c_master_dev_handle_t mpu_handle;
 
 // LGVL
 esp_lcd_panel_io_handle_t io_handle = NULL;
 esp_lcd_panel_handle_t panel_handle = NULL;
+uint8_t ui_div = 0;
 
+// Get the millisecond count from the internal esp timer
+uint32_t millis() {
+    return (uint32_t)(esp_timer_get_time() / 1000ULL);
+}
+
+
+void init_I2C(void) {
+    // I2C master configuration
+    i2c_master_bus_config_t i2c_mst_config = {
+        .clk_source = I2C_CLK_SRC_DEFAULT,
+        .i2c_port = I2C_NUM_1,
+        .scl_io_num = I2C_SCL,
+        .sda_io_num = I2C_SDA,
+        .glitch_ignore_cnt = 7,
+        .flags.enable_internal_pullup = true,
+    };
+
+    // bus handler (to be used for calls after setup)
+    i2c_master_bus_handle_t bus_handle;
+
+    // Error checking & bus setup (verifies I2C bus setup correctly)
+    ESP_ERROR_CHECK(i2c_new_master_bus(&i2c_mst_config, &bus_handle));
+
+    // MPU I2C configuration
+    i2c_device_config_t i2c_mpu_config = {
+        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+        .device_address = 0x68,
+        .scl_speed_hz = 100000,
+    };
+    // bus handler
+    
+    // Error checking & bus setup (verify config & setup)
+    ESP_ERROR_CHECK(i2c_master_bus_add_device(bus_handle, &i2c_mpu_config, &mpu_handle));
+
+    // Delay for terminal to catchup for debug
+    vTaskDelay(500);
+
+    // Read WHO_AM_I to verify that the MPU is responding at address 0x68.
+    register_address = WHO_AM_I;
+    result = i2c_master_transmit_receive(mpu_handle, &register_address, 1,
+                                         mpu_data, 1, -1);
+    ESP_ERROR_CHECK(result);
+    //ESP_LOGI(TAG, "WHO_AM_I: 0x%02X", mpu_data[0]);
+
+    // // MAX30101 I2C configuration
+    // i2c_device_config_t i2c_heartrate_config = {
+    //     .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+    //     .device_address = MAX30101_ADDRESS,
+    //     .scl_speed_hz = 100000,
+    // };
+    // // bus handler
+    // i2c_master_dev_handle_t heartrate_handle;
+    // // Error checking & bus setup
+    // ESP_ERROR_CHECK(i2c_master_bus_add_device(bus_handle, &i2c_heartrate_config, &heartrate_handle));
+
+    // ESP_ERROR_CHECK(max30101_init(heartrate_handle));
+    // ESP_LOGI(HEART_RATE_TAG, "MAX30101 initialized");
+}
+
+
+// Initialize SPI and the ST7789 TFT LCD Screen
 void init_st7789(void) {
     // Initialize SPI Bus
     spi_bus_config_t buscfg = {
@@ -149,6 +217,81 @@ void init_lvgl(void) {
     ESP_ERROR_CHECK(esp_timer_start_periodic(tick_timer, 1000));
 }
 
+// Button Setup (Interrupt-Driven)
+static volatile bool button1Pressed = false;
+static volatile bool button2Pressed = false;
+static volatile int64_t lastIsrTime1 = 0;
+static volatile int64_t lastIsrTime2 = 0;
+static watch_screen_t currentDisplay = SCREEN_BOOTUP;
+#define DEBOUNCE_MS 200
+
+// ISR for Button 1
+static void IRAM_ATTR button1_isr_handler(void *arg) {
+    int64_t now = millis();
+    if ((now - lastIsrTime1) > DEBOUNCE_MS) {
+        lastIsrTime1 = now;
+        button1Pressed = true;
+    }
+}
+static void IRAM_ATTR button2_isr_handler(void *arg) {
+    int64_t now = millis();
+    if ((now - lastIsrTime2) > DEBOUNCE_MS) {
+        lastIsrTime2 = now;
+        button2Pressed = true;
+    }
+}
+
+void init_buttons(void) {
+    gpio_config_t io_conf = {
+        .pin_bit_mask = (1ULL << BUTTON_1_PIN) | (1ULL << BUTTON_2_PIN),
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_ENABLE,    // Active-low buttons (pressed == 0)
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_NEGEDGE       // Trigger immediately on press
+    };
+    gpio_config(&io_conf);
+
+    // Install GPIO ISR service (ignore ESP_ERR_INVALID_STATE if already installed)
+    esp_err_t err = gpio_install_isr_service(0);
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+        ESP_ERROR_CHECK(err);
+    }
+
+    gpio_isr_handler_add(BUTTON_1_PIN, button1_isr_handler, NULL);
+    gpio_isr_handler_add(BUTTON_2_PIN, button2_isr_handler, NULL);
+}
+
+
+void load_screen(watch_screen_t target) {
+    currentDisplay = (watch_screen_t)(target % SCREEN_COUNT);
+
+    switch(currentDisplay) {
+        case SCREEN_BOOTUP:
+            displayBootup();
+            break;
+        case SCREEN_HOME:
+            displayHome();
+            break;
+        case SCREEN_ACTIVE:
+            displayActive();
+            break;
+        case SCREEN_TRANSMISSION:
+            displayTransmission();
+            break;
+        default:
+            currentDisplay = SCREEN_HOME;
+            displayHome();
+            break;
+    }
+}
+
+static watch_screen_t next_runtime_screen(watch_screen_t current) {
+    watch_screen_t next = (watch_screen_t)((current + 1) % SCREEN_COUNT);
+    if (next == SCREEN_BOOTUP) {
+        next = SCREEN_HOME; // Skip bootup logo during normal watch navigation
+    }
+    return next;
+}
 
 
 // Tags
@@ -157,12 +300,16 @@ void init_lvgl(void) {
 //static const char *MAIN = "esp";
 
 // Button Setup (Polling Style)
-int button1State = 1;
-int lastButton1State = 1;
-uint32_t lastDebounceTime1 = 0;
+// int button1State = 1;
+// int lastButton1State = 1;
+// uint32_t lastDebounceTime1 = 0;
 // int button2State = 1;
 // int lastButton2State = 1;
 // uint32_t lastDebounceTime2 = 0;
+
+
+
+
 
 // // Variables to hold MAX30101 values
 // uint32_t ir_value;
@@ -171,9 +318,7 @@ uint32_t lastDebounceTime1 = 0;
 // int64_t last_beat_ms = 0;
 // uint16_t stable_bpm = 0;
 
-uint32_t millis() {
-    return (uint32_t)(esp_timer_get_time() / 1000ULL);
-}
+
 
 // Logging
 // struct log {
@@ -194,44 +339,15 @@ uint32_t millis() {
 
 
 // Main application loop
-void app_main(void)
-{
+void app_main(void) {
     // Set up the ST7789 screen
     init_st7789();
     init_lvgl();
-    //setupScreens();
-
-    lv_obj_t *screen_bootup = lv_obj_create(NULL);
-    lv_obj_t *screen_home = lv_obj_create(NULL);
-    lv_obj_t *screen_active = lv_obj_create(NULL);
-
-    //lv_scr_load(screen_bootup);
-
-    lv_obj_t *intro_label = lv_label_create(screen_bootup);
-    lv_label_set_text(intro_label, "Heartwatch\nSystem Online!\nV2");
-    lv_obj_align(intro_label, LV_ALIGN_CENTER, 0, 0);
-
-    lv_obj_t *intro_led = lv_led_create(screen_bootup);
-    lv_led_set_color(intro_led, lv_color_hex(0xff0080));
-    lv_led_set_brightness(intro_led, 255);
-    lv_obj_align(intro_led, LV_ALIGN_CENTER, 40, 40);
-
-
-    lv_obj_t *home_label = lv_label_create(screen_home);
-    lv_label_set_text(home_label, "Heartwatch\nHome Screen");
-    lv_obj_align(home_label, LV_ALIGN_CENTER, 0, 0);
-
-    lv_obj_t *active_label = lv_label_create(screen_active);
-    lv_label_set_text(active_label, "Heartwatch\nActive Screen");
-    lv_obj_align(active_label, LV_ALIGN_CENTER, 0, 0);
-
-
-    //lv_obj_t *label = lv_label_create(lv_scr_act());
-    //lv_label_set_text(label, "Heartwatch\nSystem Online!");
-    //lv_obj_align(label, LV_ALIGN_CENTER, 0, 0);
-
-    
-    uint8_t current_display = SCREEN_BOOTUP;
+    init_I2C();
+    init_buttons();
+    setupScreens();
+    vTaskDelay(pdMS_TO_TICKS(1500));
+    displayBootup();
 
     //ESP_ERROR_CHECK(esp_lcd_panel_disp_sleep(panel_handle, true));
 
@@ -244,17 +360,15 @@ void app_main(void)
     // ESP_ERROR_CHECK(log_buffer != NULL ? ESP_OK : ESP_ERR_NO_MEM);
 
     // Button Config
-     gpio_reset_pin(BUTTON_1_PIN);
-     gpio_set_direction(BUTTON_1_PIN, GPIO_MODE_INPUT);
-     gpio_set_pull_mode(BUTTON_1_PIN, GPIO_PULLUP_ONLY);
+    // gpio_reset_pin(BUTTON_1_PIN);
+    // gpio_set_direction(BUTTON_1_PIN, GPIO_MODE_INPUT);
+    // gpio_set_pull_mode(BUTTON_1_PIN, GPIO_PULLUP_ONLY);
 
-     gpio_reset_pin(BUTTON_2_PIN);
-     gpio_set_direction(BUTTON_2_PIN, GPIO_MODE_INPUT);
-     gpio_set_pull_mode(BUTTON_2_PIN, GPIO_PULLUP_ONLY);
+    // gpio_reset_pin(BUTTON_2_PIN);
+    // gpio_set_direction(BUTTON_2_PIN, GPIO_MODE_INPUT);
+    // gpio_set_pull_mode(BUTTON_2_PIN, GPIO_PULLUP_ONLY);
 
-    const uint32_t debounceDelay = 10; // 50ms delay
-
-    
+    // const uint32_t debounceDelay = 10; // 50ms delay
     
     // Heartbeat LED config
 	gpio_config_t led_config = {
@@ -266,118 +380,120 @@ void app_main(void)
 	};
 	gpio_config(&led_config);
 
-    // // SPI & sh1107 (OLED Display)
-    // sh1107_config_t display_config = {
-    //     .host = SPI2_HOST,
-    //     .sclk_gpio = SPI_SCLK,
-    //     .mosi_gpio = SPI_MOSI,
-    //     .cs_gpio = SPI_CS,
-    //     .dc_gpio = SPI_DC,
-    //     .reset_gpio = SPI_RST,
-    // };
-    // ESP_ERROR_CHECK(sh1107_init(&display_config));
-    // ESP_ERROR_CHECK(sh1107_clear());
-    // displayHUD(display);
-
-    // vTaskDelay(200);
-
-    // //ESP_ERROR_CHECK(sh1107_clear());
-
-    // vTaskDelay(100);
-
-    //displayHUD(2);
-    // // I2C master configuration
-    // i2c_master_bus_config_t i2c_mst_config = {
-    //     .clk_source = I2C_CLK_SRC_DEFAULT,
-    //     .i2c_port = I2C_NUM_1,
-    //     .scl_io_num = I2C_SCL,
-    //     .sda_io_num = I2C_SDA,
-    //     .glitch_ignore_cnt = 7,
-    //     .flags.enable_internal_pullup = true,
-    // };
-
-    // // bus handler (to be used for calls after setup)
-    // i2c_master_bus_handle_t bus_handle;
-
-    // // Error checking & bus setup (verifies I2C bus setup correctly)
-    // ESP_ERROR_CHECK(i2c_new_master_bus(&i2c_mst_config, &bus_handle));
-
-    // // MPU I2C configuration
-    // i2c_device_config_t i2c_mpu_config = {
-    //     .dev_addr_length = I2C_ADDR_BIT_LEN_7,
-    //     .device_address = 0x68,
-    //     .scl_speed_hz = 100000,
-    // };
-    // // bus handler
-    // i2c_master_dev_handle_t mpu_handle;
-    // // Error checking & bus setup (verify config & setup)
-    // ESP_ERROR_CHECK(i2c_master_bus_add_device(bus_handle, &i2c_mpu_config, &mpu_handle));
-
-    // // Delay for terminal to catchup for debug
-    // // vTaskDelay(500);
-
-    // // MPU read buffer
-    // uint8_t mpu_data[MPU_DATA_LENGTH];
-    // uint8_t register_address;
-    // esp_err_t result;
-    // int16_t accel_x, accel_y, accel_z;
-    // int16_t gyro_x, gyro_y, gyro_z;
-
-    // // Read WHO_AM_I to verify that the MPU is responding at address 0x68.
-    // register_address = WHO_AM_I;
-    // result = i2c_master_transmit_receive(mpu_handle, &register_address, 1,
-    //                                      mpu_data, 1, -1);
-    // ESP_ERROR_CHECK(result);
-    // ESP_LOGI(TAG, "WHO_AM_I: 0x%02X", mpu_data[0]);
-
-    // // MAX30101 I2C configuration
-    // i2c_device_config_t i2c_heartrate_config = {
-    //     .dev_addr_length = I2C_ADDR_BIT_LEN_7,
-    //     .device_address = MAX30101_ADDRESS,
-    //     .scl_speed_hz = 100000,
-    // };
-    // // bus handler
-    // i2c_master_dev_handle_t heartrate_handle;
-    // // Error checking & bus setup
-    // ESP_ERROR_CHECK(i2c_master_bus_add_device(bus_handle, &i2c_heartrate_config, &heartrate_handle));
-
-    // ESP_ERROR_CHECK(max30101_init(heartrate_handle));
-    // ESP_LOGI(HEART_RATE_TAG, "MAX30101 initialized");
-
-
     // Main polling loop
 	while (1) {
-            
-        // Button Debounce Routines and Display Selections
-        int reading1 = gpio_get_level(BUTTON_1_PIN);
-        if (reading1 != lastButton1State) {
-            lastDebounceTime1 = millis();
-        }
-         if ((millis() - lastDebounceTime1) > debounceDelay) {
-            if (reading1 != button1State) {
-                button1State = reading1;
+        if (button1Pressed) {
+            button1Pressed = false;
+            load_screen(next_runtime_screen(currentDisplay));
+        } else if (button2Pressed) {
+            displayHome();
+        } else {
 
-                if (button1State == 0) {
-                    current_display++;
-                    if (current_display > 2) {
-                        current_display = 0;
-                    }   
-               
-                    switch (current_display) {
-                        case SCREEN_BOOTUP: // Bootup Screen 
-                             lv_scr_load(screen_bootup);
-                        break;
-                        case SCREEN_HOME: // Clock Display
-                            lv_scr_load(screen_home);
-                        break;
-                        case SCREEN_ACTIVE: // Heart Rate & Movement Data
-                            lv_scr_load(screen_active);
-                        break;
-                    }
+            // MPU data read)
+            register_address = MPU_REG_ACCEL_XOUT_H;
+            result = i2c_master_transmit_receive(mpu_handle, &register_address, 1,
+                                                mpu_data, MPU_DATA_LENGTH, 50);
+
+            if (result == ESP_OK) {
+                ax = (int16_t)(((uint16_t)mpu_data[0] << 8) | mpu_data[1]);
+                ay = (int16_t)(((uint16_t)mpu_data[2] << 8) | mpu_data[3]);
+                az = (int16_t)(((uint16_t)mpu_data[4] << 8) | mpu_data[5]);
+                gx = (int16_t)(((uint16_t)mpu_data[8] << 8) | mpu_data[9]);
+                gy = (int16_t)(((uint16_t)mpu_data[10] << 8) | mpu_data[11]);
+                gz = (int16_t)(((uint16_t)mpu_data[12] << 8) | mpu_data[13]);
+                
+                if (++ui_div >= 15) { // 150ms
+                    ui_div = 0;
+                    updateActiveScreen(ax, ay, az, gx, gy, gz);
                 }
+            } else {
+                ESP_LOGW("IMU", "MPU read failed: %s", esp_err_to_name(result));
             }
         }
-        lastButton1State = reading1;
+        lv_timer_handler();
+        vTaskDelay(pdMS_TO_TICKS(10));
+	}
+}
+
+
+
+
+        // // Button Debounce Routines and Display Selections
+        // int reading1 = gpio_get_level(BUTTON_1_PIN);
+        // if (reading1 != lastButton1State) {
+        //     lastDebounceTime1 = millis();
+        // }
+        //  if ((millis() - lastDebounceTime1) > debounceDelay) {
+        //     if (reading1 != button1State) {
+        //         button1State = reading1;
+
+        //         if (button1State == 0) {
+        //             if (currentDisplay > 2) {
+        //                 currentDisplay = 0;
+        //             }
+        //             currentDisplay = nextDisplay;
+        //             switch (currentDisplay) {
+        //                 case SCREEN_BOOTUP: // Bootup Screen 
+        //                     displayBootup();
+        //                 break;
+        //                 case SCREEN_HOME: // Clock Display
+        //                     displayHome();
+        //                 break;
+        //                 case SCREEN_ACTIVE: // Heart Rate & Movement Data
+        //                     displayActive();
+        //             }
+        //             nextDisplay++;
+
+        //         }
+        //     }
+        // }
+        // lastButton1State = reading1;
+
+        // int reading2 = gpio_get_level(BUTTON_2_PIN);
+        // if (reading2 != lastButton2State) {
+        //     lastDebounceTime2 = millis();
+        // }
+        // if ((millis() - lastDebounceTime2) > debounceDelay) {
+        //     if (reading2 != button2State) {
+        //         button2State = reading2;
+
+        //         if (button2State == 0) {
+        //             //displayActive();
+        //             //if (current_display == 2) {
+                        
+        //             //     for (uint32_t i = 0; i < log_pointer; i++) {
+        //             //         uint16_t temp = (log_buffer+i)->ax;
+        //             //         ESP_LOGI(MAIN, "log%d: ax: %d", i, temp);
+        //             //     }
+        //             // } else {
+        //             //     ESP_ERROR_CHECK(esp_lcd_panel_disp_sleep(panel_handle, true));
+        //             // }
+        //         } else  {
+        //             //displayBootup();
+        //         }
+        //     }
+        // }
+        // lastButton2State = reading2;
+
+        //  // MPU data read
+        // register_address = MPU_REG_ACCEL_XOUT_H;
+        // result = i2c_master_transmit_receive(mpu_handle, &register_address, 1,
+        //                         mpu_data, MPU_DATA_LENGTH, -1);
+        // ESP_ERROR_CHECK(result);
+        // ax = (int16_t)(((uint16_t)mpu_data[0] << 8) | mpu_data[1]);
+        // ay = (int16_t)(((uint16_t)mpu_data[2] << 8) | mpu_data[3]);
+        // az = (int16_t)(((uint16_t)mpu_data[4] << 8) | mpu_data[5]);
+        // gx = (int16_t)(((uint16_t)mpu_data[8] << 8) | mpu_data[9]);
+        // gy = (int16_t)(((uint16_t)mpu_data[10] << 8) | mpu_data[11]);
+        // gz = (int16_t)(((uint16_t)mpu_data[12] << 8) | mpu_data[13]);
+
+
+
+
+        
+
+
+
 
         // // Read heart rate BPM
         // for (int sample_count = 0; sample_count < 8; sample_count++) {
@@ -425,42 +541,13 @@ void app_main(void)
         //     }
         // } // End of while loop
 
-        // // MPU data read
-        // register_address = MPU_REG_ACCEL_XOUT_H;
-        // result = i2c_master_transmit_receive(mpu_handle, &register_address, 1,
-        //                         mpu_data, MPU_DATA_LENGTH, -1);
-        // ESP_ERROR_CHECK(result);
-        // accel_x = (int16_t)(((uint16_t)mpu_data[0] << 8) | mpu_data[1]);
-        // accel_y = (int16_t)(((uint16_t)mpu_data[2] << 8) | mpu_data[3]);
-        // accel_z = (int16_t)(((uint16_t)mpu_data[4] << 8) | mpu_data[5]);
-        // gyro_x = (int16_t)(((uint16_t)mpu_data[8] << 8) | mpu_data[9]);
-        // gyro_y = (int16_t)(((uint16_t)mpu_data[10] << 8) | mpu_data[11]);
-        // gyro_z = (int16_t)(((uint16_t)mpu_data[12] << 8) | mpu_data[13]);
+
 
        
         
-        // int reading2 = gpio_get_level(BUTTON_2_PIN);
-        // if (reading2 != lastButton2State) {
-        //     lastDebounceTime2 = millis();
-        // }
+      
 
-        // if ((millis() - lastDebounceTime2) > debounceDelay) {
-        //     if (reading2 != button2State) {
-        //         button2State = reading2;
-
-        //         if (button2State == 0) {
-        //             if (current_display == 2) {
-        //                 for (uint32_t i = 0; i < log_pointer; i++) {
-        //                     uint16_t temp = (log_buffer+i)->ax;
-        //                     ESP_LOGI(MAIN, "log%d: ax: %d", i, temp);
-        //                 }
-        //             } else {
-        //                 ESP_ERROR_CHECK(esp_lcd_panel_disp_sleep(panel_handle, true));
-        //             }
-        //         }
-        //     }
-        // }
-        // lastButton2State = reading2;
+   
 
 
         // // // Display 1: Timer
@@ -600,7 +687,7 @@ void app_main(void)
         // // // Print to serial
         // // // ESP_LOGI(TAG, "AX: %d, AY: %d, AZ: %d, GX: %d, GY: %d, GZ: %d\n", accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z);
         // // // ESP_LOGI(MAIN, "\n");
-        lv_timer_handler();
-        vTaskDelay(pdMS_TO_TICKS(10));
-	}
-}
+        // static int counter = 0;
+        // if (counter++ % 200 == 0) {
+        //     printf("Heartbeat: System alive. Free Heap: %d bytes\n", (int)esp_get_free_heap_size());
+        // }
