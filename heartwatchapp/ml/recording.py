@@ -2,8 +2,10 @@
 
 Plain-language overview: the model is trained on recordings that come from
 different places -- today the two text logs the watch printed over USB
-(HeartWatch/test/Standing.txt and Walking.txt), later sessions saved in the
-app's database. This file turns each kind into the same thing, a
+(HeartWatch/test/Standing.txt and Walking.txt), the newer PSRAM log dumps
+the watch prints after a button-2 recording (from_log_dump), later
+sessions saved in the app's database. This file turns each kind into the
+same thing, a
 `Recording`: timestamps, six motion channels in g and deg/s, an activity
 label, and a `meta` dict saying exactly where the data came from.
 
@@ -40,6 +42,26 @@ LEGACY_IMU_RE = re.compile(
     r"^I \((\d+)\) mpu: AX: (-?\d+), AY: (-?\d+), AZ: (-?\d+), "
     r"GX: (-?\d+), GY: (-?\d+), GZ: (-?\d+)$"
 )
+# One reading of the watch's PSRAM log dump (firmware 7f462d8, main.c:316-324):
+#   I (52310) esp: log0: ax: 4612, ay: -13240, az: -2848, gx: 2811, gy: 120, gz: -5, heartrate: 54
+# search(), not match(): the "I (<ms>) esp: " prefix is optional and ignored.
+# Labels and field order are exact; a renamed field (e.g. "hr:") does not match.
+LOG_DUMP_RE = re.compile(
+    r"(?<![\w])log(\d+)\s*:\s*"
+    r"ax\s*:\s*(-?\d+)\s*,\s*ay\s*:\s*(-?\d+)\s*,\s*az\s*:\s*(-?\d+)\s*,\s*"
+    r"gx\s*:\s*(-?\d+)\s*,\s*gy\s*:\s*(-?\d+)\s*,\s*gz\s*:\s*(-?\d+)\s*,\s*"
+    r"heartrate\s*:\s*(\d+)\s*$"
+)
+LOG_DUMP_SHAPE = "log<N>: ax: <n>, ay: <n>, az: <n>, gx: <n>, gy: <n>, gz: <n>, heartrate: <n>"
+LOG_DUMP_FORMAT = "log-dump-v1"
+LOG_DUMP_HARDWARE_NOTE = (
+    "IMU range registers and PWR_MGMT_1 never written by firmware 7f462d8; "
+    "sensor defaults assumed; chip variant unconfirmed."
+)
+# A line that starts like a log-dump reading but doesn't match LOG_DUMP_RE.
+_LOG_DUMP_LIKE_RE = re.compile(r"(?<![\w])log\d+\s*:")
+# Any other ESP-IDF log line (boot text, WHO_AM_I, PSRAM detected, ...).
+_IDF_LOG_RE = re.compile(r"^[EWIDV] \(\d+\) [^:]*:")
 _HR_RE = re.compile(r"^E \(\d+\) heartrate: ")
 _ESP_RE = re.compile(r"^I \(\d+\) esp: ?$")
 _MPU_PREFIX_RE = re.compile(r"^I \(\d+\) mpu: ")
@@ -141,6 +163,132 @@ def from_legacy_capture(path: str | Path, label: str | None = None) -> Recording
             "timestamps": "device uptime ms",
             "line_counts": line_counts,
             "hardware_note": HARDWARE_NOTE,
+        },
+    )
+
+
+def _label_from_dump_name(path: Path) -> str | None:
+    """Sitting_20261110_03.txt -> "Sitting"; Standing.txt -> "Standing".
+    The part of the stem before the first "_", matched exactly (case
+    included) against CLASSES, like from_legacy_capture. None if no match."""
+    head = path.stem.split("_", 1)[0]
+    return head if head in CLASSES else None
+
+
+def from_log_dump(
+    path: str | Path,
+    rate_hz: float,
+    label: str | None = None,
+    accel_scale: float = spec.LEGACY_ACCEL_SCALE,
+    gyro_scale: float = spec.LEGACY_GYRO_SCALE,
+) -> Recording:
+    """A Recording from one PSRAM log dump the watch printed over serial
+    (button 2: start, stop, then press again to print).
+
+    Plain-language overview: each reading line is
+        I (52310) esp: log0: ax: ..., ay: ..., az: ..., gx: ..., gy: ..., gz: ..., heartrate: ...
+    The watch stores readings without any time, then prints all of them in
+    one burst after the recording stops. So the "I (52310)" at the start of
+    a line is when that line was PRINTED, not when the reading was taken;
+    it is ignored. The only thing that orders the readings is the log
+    number N. Times are therefore worked out as
+        ts_ms = (N - first N) * 1000 / rate_hz
+    which is only right if the watch really took readings at exactly
+    `rate_hz`. Today it doesn't promise that (its loop speed varies), so
+    `rate_hz` is an ASSUMPTION the caller must state -- there is no
+    default -- and meta["timestamps"] says so. This stays true until the
+    firmware either stamps each reading with its time or samples on a
+    fixed timer. (With a per-reading time added to the line, this function
+    would read that number into ts_ms instead and drop rate_hz.)
+
+    Rules:
+    - Only lines matching LOG_DUMP_RE are readings; everything else is
+      skipped and counted in meta["line_counts"]: "blank", "log" (other
+      ESP-IDF log lines: boot text, WHO_AM_I, ...), "malformed" (looks like
+      "log<N>:" but doesn't match exactly, e.g. a renamed field or a line
+      cut short), "other". No reading lines at all -> ValueError.
+    - Log numbers must go up by exactly 1 per reading (any start). A skip
+      or a repeat -> ValueError naming the file line.
+    - Counts -> g and deg/s with counts_to_units(accel_scale, gyro_scale);
+      the defaults are the sensor's power-on ranges (+-2 g, +-250 deg/s),
+      which firmware 7f462d8 still uses.
+    - `label`, else the file name's part before the first "_"
+      (Sitting_20261110_03.txt, or plain Standing.txt); must be in CLASSES,
+      else ValueError.
+    - Heart rate is kept in meta["heartrate"] (int64 array, one per
+      reading), not in `imu`: the model uses the 6 motion channels only.
+    """
+    path = Path(path)
+    if not rate_hz > 0:  # also rejects NaN
+        raise ValueError(f"rate_hz must be > 0, got {rate_hz!r}")
+    if label is None:
+        label = _label_from_dump_name(path)
+        if label is None:
+            raise ValueError(
+                f"{path}: no label given and the file name doesn't start with one of "
+                f"{CLASSES} (expected e.g. Sitting_20261110_03.txt); pass label="
+            )
+    _check_label(label)
+
+    raw = path.read_bytes()
+    sha256 = hashlib.sha256(raw).hexdigest()
+    kinds = collections.Counter()
+    logs, counts, hr = [], [], []
+    for line_no, line in enumerate(raw.decode("utf-8").splitlines(), start=1):
+        m = LOG_DUMP_RE.search(line)
+        if m:
+            n = int(m[1])
+            if logs and n != logs[-1] + 1:
+                what = "repeated" if n <= logs[-1] else "skipped"
+                hint = (" A repeat often means the dump was printed twice into one file."
+                        if n <= logs[-1] else "")
+                raise ValueError(
+                    f"{path}: line {line_no}: log number {what}: expected log{logs[-1] + 1}, "
+                    f"found log{n}.{hint}"
+                )
+            kinds["imu"] += 1
+            logs.append(n)
+            counts.append([int(v) for v in m.groups()[1:7]])
+            hr.append(int(m[8]))
+        elif not line.strip():
+            kinds["blank"] += 1
+        elif _LOG_DUMP_LIKE_RE.search(line):
+            kinds["malformed"] += 1
+        elif _IDF_LOG_RE.match(line):
+            kinds["log"] += 1
+        else:
+            kinds["other"] += 1
+    line_counts = {k: kinds.get(k, 0) for k in ("imu", "blank", "log", "malformed", "other")}
+    if not logs:
+        raise ValueError(
+            f"{path}: no reading lines found (expected lines like '{LOG_DUMP_SHAPE}'); "
+            f"skipped {line_counts}"
+        )
+
+    n_rel = np.array(logs, dtype=np.int64) - logs[0]
+    # resample() wants int64 ms, non-decreasing. Exact for rates that
+    # divide 1000 (10, 50, 100 Hz); otherwise rounded to the nearest ms.
+    ts = np.rint(n_rel * (1000.0 / rate_hz)).astype(np.int64)
+    counts_arr = np.array(counts, dtype=np.int64).reshape(-1, 6)
+    return Recording(
+        ts_ms=ts,
+        imu=counts_to_units(counts_arr, accel_scale, gyro_scale),
+        label=label,
+        source="log-dump",
+        meta={
+            "format": LOG_DUMP_FORMAT,
+            "path": str(path),
+            "source_file": path.name,
+            "sha256": sha256,
+            "accel_scale": accel_scale,
+            "gyro_scale": gyro_scale,
+            "timestamps": f"assumed fixed rate {rate_hz:g} Hz from log number",
+            "rate_hz": rate_hz,
+            "first_log": logs[0],
+            "n_samples": len(logs),
+            "line_counts": line_counts,
+            "heartrate": np.array(hr, dtype=np.int64),
+            "hardware_note": LOG_DUMP_HARDWARE_NOTE,
         },
     )
 
