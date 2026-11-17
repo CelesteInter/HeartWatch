@@ -22,11 +22,11 @@
 /**
  * @brief Initialize the MAX30101 green LED heart-rate sensor.
  */
-esp_err_t max30101_init(i2c_master_dev_handle_t handle);
+esp_err_t max30101_init(i2c_master_bus_handle_t bus_handle);
 
 /**
  * @brief Read the current green LED value from the FIFO.
  */
-bool max30101_read_green(i2c_master_dev_handle_t handle, uint32_t *green_value);
+bool max30101_read_green(uint32_t *green_value);
 
 #endif
