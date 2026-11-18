@@ -198,6 +198,8 @@ void app_main(void)
         // update "current" time, report the state as sleep, read GPIO buttons
         uint32_t now = millis();
         static state_t reported_state = STATE_SLEEP;
+        static bool heart_screen_layout_valid = false;
+        static uint32_t last_heart_display_refresh = 0;
         int reading1 = gpio_get_level(BUTTON_1_PIN);
         int reading2 = gpio_get_level(BUTTON_2_PIN);
 
@@ -229,16 +231,26 @@ void app_main(void)
             } else {
                 device_state = STATE_DISPLAY;
                 display_time = now;
+                heart_screen_layout_valid = false;
             }
         } else if (reading1 != 0) {
-            button1State = 1;
+            button1State = 1; // Ensure holding buttons doesn't count as multiple presses
         }
 
+        // Update state if button2 is pressed
         if (button2_pressed) {
-            button2State = 0;
+            button2State = 0; // Reset to avoid flipping
             if (device_state == STATE_LOG ||
                 device_state == STATE_LOG_AND_DISPLAY) {
-                device_state = STATE_SLEEP;
+                // Append EOL (0,0,0,0)
+                if (log_pointer < LOG_CAPACITY) {
+                    log_buffer[log_pointer++] = (struct log) {
+                        .ax = 0, .ay = 0, .az = 0,
+                        .gx = 0, .gy = 0, .gz = 0,
+                        .heartrate = 0
+                    };
+                }
+                device_state = STATE_SLEEP; // End log and sleep
             } else if (device_state == STATE_SLEEP ||
                        device_state == STATE_DISPLAY) {
                 log_pointer = 0;
@@ -250,19 +262,22 @@ void app_main(void)
             button2State = 1;
         }
 
+        // Countdown for state display (sleep after 5 seconds)
         if (device_state == STATE_DISPLAY &&
             now - display_time >= 5000) {
             displayHUD(0);
-            device_state = STATE_SLEEP;
             reset_heart_rate_state();
+            device_state = STATE_SLEEP;
         }
 
+        // Debug code - switch states and log
         if (device_state != reported_state) {
             ESP_LOGI(MAIN_TAG, "State changed: %s -> %s",
                      state_name(reported_state), state_name(device_state));
             reported_state = device_state;
         }
 
+        // Read heartrate if state is display, log, or log and display
         if (device_state == STATE_DISPLAY ||
             device_state == STATE_LOG ||
             device_state == STATE_LOG_AND_DISPLAY) {
@@ -357,13 +372,15 @@ void app_main(void)
             }
         }
 
+        // Read MPU and log mpu+HR if logging
         if (device_state == STATE_LOG ||
             device_state == STATE_LOG_AND_DISPLAY) {
             if (!mpu_read(&accel_x, &accel_y, &accel_z,
                           &gyro_x, &gyro_y, &gyro_z)) {
                 ESP_LOGW(MPU_TAG, "MPU read failed");
             }
-
+            
+            // append log
             if (log_pointer < LOG_CAPACITY) {
                 log_buffer[log_pointer++] = (struct log) {
                     .ax = accel_x, .ay = accel_y, .az = accel_z,
@@ -373,21 +390,40 @@ void app_main(void)
             }
         }
 
+        // Display status if display active 
         if (device_state == STATE_LOG_AND_DISPLAY) {
-            char message[32];
-            snprintf(message, sizeof(message),
-                     " HR: %" PRIu16 " BPM\nTime: %" PRIu32 "s",
-                     stable_bpm, (now - log_start_time) / 1000);
-            ESP_ERROR_CHECK(sh1107_set_cursor(0, 0));
-            ESP_ERROR_CHECK(sh1107_print(message));
+            if (!heart_screen_layout_valid) {
+                displayHUD(2);
+                heart_screen_layout_valid = true;
+            }
+            if (now - last_heart_display_refresh >= 250) {
+                char message[32];
+                snprintf(message, sizeof(message),
+                         " HR: %" PRIu16 " BPM",
+                         stable_bpm);
+                ESP_ERROR_CHECK(sh1107_set_cursor(5, 7));
+                ESP_ERROR_CHECK(sh1107_print(message));
+                last_heart_display_refresh = now;
+            }
         } else if (device_state == STATE_DISPLAY) {
-            char message[32];
-            snprintf(message, sizeof(message), " HR: %" PRIu16 " BPM",
-                     stable_bpm);
-            ESP_ERROR_CHECK(sh1107_set_cursor(5, 7));
-            ESP_ERROR_CHECK(sh1107_print(message));
+            if (!heart_screen_layout_valid) {
+                displayHUD(2);
+                heart_screen_layout_valid = true;
+            }
+            if (now - last_heart_display_refresh >= 250) {
+                char message[32];
+                snprintf(message, sizeof(message),
+                         " HR: %" PRIu16 " BPM",
+                         stable_bpm);
+                ESP_ERROR_CHECK(sh1107_set_cursor(5, 7));
+                ESP_ERROR_CHECK(sh1107_print(message));
+                last_heart_display_refresh = now;
+            }
+        } else {
+            heart_screen_layout_valid = false;
         }
 
+        // Transmit logs
         if (device_state == STATE_TRANSMIT_DATA) {
             for (uint32_t i = 0; i < log_pointer; i++) {
                 struct log *entry = &log_buffer[i];
@@ -404,8 +440,12 @@ void app_main(void)
             device_state = STATE_SLEEP;
         }
 
+        if (device_state == STATE_SLEEP) {
+            
+        }
+
         lastButton1State = reading1;
         lastButton2State = reading2;
-        vTaskDelay(pdMS_TO_TICKS(10));
+        vTaskDelay(pdMS_TO_TICKS(10)); // Every 1/10th seconds
     }
 }
