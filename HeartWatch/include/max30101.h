@@ -29,4 +29,14 @@ esp_err_t max30101_init(i2c_master_bus_handle_t bus_handle);
  */
 bool max30101_read_green(uint32_t *green_value);
 
+/**
+ * @brief Put the MAX30101 into low-power shutdown mode.
+ */
+esp_err_t max30101_sleep(void);
+
+/**
+ * @brief Wake the MAX30101 and restore multi-LED operation.
+ */
+esp_err_t max30101_wakeup(void);
+
 #endif

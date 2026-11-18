@@ -7,6 +7,9 @@
 static const char *TAG = "max30101";
 static i2c_master_dev_handle_t device_handle;
 static bool initialized;
+static bool sleeping;
+
+#define MAX30101_MODE_SHUTDOWN (1U << 7)
 
 // NOTE - Change the -1 on i2c_master_transmit to enable timeout for optimization and time constraints
 static esp_err_t max30101_write(i2c_master_dev_handle_t handle,
@@ -66,27 +69,88 @@ esp_err_t max30101_init(i2c_master_bus_handle_t bus_handle)
     ESP_ERROR_CHECK(max30101_write(device_handle, MAX30101_REG_MULTI_LED_CTRL1, 0x03)); // Green in slot 1
     ESP_ERROR_CHECK(max30101_write(device_handle, MAX30101_REG_MODE_CONFIG, 0x07)); // Set to multi-LED mode
     initialized = true;
+    sleeping = false;
     return ESP_OK;
+}
+
+esp_err_t max30101_sleep(void)
+{
+    if (!initialized) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (sleeping) {
+        return ESP_OK;
+    }
+
+    uint8_t mode_config;
+    esp_err_t result = max30101_read(
+        device_handle, MAX30101_REG_MODE_CONFIG, &mode_config, 1);
+    if (result != ESP_OK) {
+        return result;
+    }
+
+    result = max30101_write(
+        device_handle, MAX30101_REG_MODE_CONFIG,
+        mode_config | MAX30101_MODE_SHUTDOWN);
+    if (result == ESP_OK) {
+        sleeping = true;
+    }
+    return result;
+}
+
+esp_err_t max30101_wakeup(void)
+{
+    if (!initialized) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    esp_err_t result = max30101_write(
+        device_handle, MAX30101_REG_MODE_CONFIG, 0x07);
+    if (result != ESP_OK) {
+        return result;
+    }
+
+    result = max30101_write(device_handle, MAX30101_REG_SPO2_CONFIG, 0x27);
+    if (result != ESP_OK) {
+        return result;
+    }
+    result = max30101_write(device_handle, MAX30101_REG_LED3_PA, 0x24);
+    if (result != ESP_OK) {
+        return result;
+    }
+    result = max30101_write(device_handle, MAX30101_REG_MULTI_LED_CTRL1, 0x03);
+    if (result != ESP_OK) {
+        return result;
+    }
+
+    result = max30101_write(device_handle, MAX30101_REG_FIFO_WR_PTR, 0x00);
+    if (result == ESP_OK) {
+        result = max30101_write(device_handle, MAX30101_REG_OVF_COUNTER, 0x00);
+    }
+    if (result == ESP_OK) {
+        result = max30101_write(device_handle, MAX30101_REG_FIFO_RD_PTR, 0x00);
+    }
+    if (result == ESP_OK) {
+        sleeping = false;
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+    return result;
 }
 
 bool max30101_read_green(uint32_t *green_value)
 {
-    uint8_t write_pointer;
-    uint8_t read_pointer;
     uint8_t fifo_data[3];
 
     if (green_value == NULL) {
+        ESP_LOGI(TAG, "green was null");
         return false;
     }
 
-    if (!initialized ||
-        max30101_read(device_handle, MAX30101_REG_FIFO_WR_PTR, &write_pointer, 1) != ESP_OK ||
-        max30101_read(device_handle, MAX30101_REG_FIFO_RD_PTR, &read_pointer, 1) != ESP_OK ||
-        write_pointer == read_pointer) {
+    if (!initialized || sleeping) {
         return false;
     }
 
     if (max30101_read(device_handle, MAX30101_REG_FIFO_DATA, fifo_data, sizeof(fifo_data)) != ESP_OK) {
+        ESP_LOGI(TAG, "read failed!");
         return false;
     }
 

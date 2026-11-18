@@ -265,9 +265,29 @@ void app_main(void)
         // Countdown for state display (sleep after 5 seconds)
         if (device_state == STATE_DISPLAY &&
             now - display_time >= 5000) {
-            displayHUD(0);
-            reset_heart_rate_state();
+            // reset_heart_rate_state();
             device_state = STATE_SLEEP;
+        }
+
+        // Wake for heart-rate sampling and shut down in inactive states.
+        bool heart_rate_active =
+            device_state == STATE_DISPLAY ||
+            device_state == STATE_LOG ||
+            device_state == STATE_LOG_AND_DISPLAY;
+        static bool max30101_active = true;
+        if (heart_rate_active && !max30101_active) {
+            if (max30101_wakeup() != ESP_OK) {
+                ESP_LOGW(MAX30101_TAG, "Failed to wake MAX30101");
+            } else {
+                max30101_active = true;
+                reset_heart_rate_state();
+            }
+        } else if (!heart_rate_active && max30101_active) {
+            if (max30101_sleep() != ESP_OK) {
+                ESP_LOGW(MAX30101_TAG, "Failed to sleep MAX30101");
+            } else {
+                max30101_active = false;
+            }
         }
 
         // Debug code - switch states and log
@@ -282,7 +302,9 @@ void app_main(void)
             device_state == STATE_LOG ||
             device_state == STATE_LOG_AND_DISPLAY) {
             for (int sample_count = 0; sample_count < 8; sample_count++) {
+                // ESP_LOGI(MAIN_TAG, "sampling...");
                 if (!max30101_read_green(&green_value)) {
+                    ESP_LOGI(MAIN_TAG, "breaking loop");
                     break;
                 }
 
@@ -441,7 +463,7 @@ void app_main(void)
         }
 
         if (device_state == STATE_SLEEP) {
-            
+            sh1107_clear();
         }
 
         lastButton1State = reading1;
