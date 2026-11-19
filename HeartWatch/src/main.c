@@ -264,7 +264,7 @@ void app_main(void)
 
         // Countdown for state display (sleep after 5 seconds)
         if (device_state == STATE_DISPLAY &&
-            now - display_time >= 5000) {
+            now - display_time >= 7000) {
             // reset_heart_rate_state();
             device_state = STATE_SLEEP;
         }
@@ -422,7 +422,7 @@ void app_main(void)
                 char message[32];
                 snprintf(message, sizeof(message),
                          " HR: %" PRIu16 " BPM",
-                         stable_bpm);
+                         (stable_bpm/2));
                 ESP_ERROR_CHECK(sh1107_set_cursor(5, 7));
                 ESP_ERROR_CHECK(sh1107_print(message));
                 last_heart_display_refresh = now;
@@ -436,7 +436,7 @@ void app_main(void)
                 char message[32];
                 snprintf(message, sizeof(message),
                          " HR: %" PRIu16 " BPM",
-                         stable_bpm);
+                         (stable_bpm/2));
                 ESP_ERROR_CHECK(sh1107_set_cursor(5, 7));
                 ESP_ERROR_CHECK(sh1107_print(message));
                 last_heart_display_refresh = now;
@@ -454,7 +454,7 @@ void app_main(void)
                          "gx: %d, gy: %d, gz: %d, heartrate: %u",
                          i, entry->ax, entry->ay, entry->az,
                          entry->gx, entry->gy, entry->gz,
-                         entry->heartrate);
+                         ((entry->heartrate)/2));
             }
             displayHUD(0);
             reset_heart_rate_state();
@@ -468,6 +468,11 @@ void app_main(void)
 
         lastButton1State = reading1;
         lastButton2State = reading2;
-        vTaskDelay(pdMS_TO_TICKS(10)); // Every 1/10th seconds
+
+        if (device_state == STATE_LOG ||
+            device_state == STATE_DISPLAY ||
+            device_state == STATE_LOG_AND_DISPLAY) {
+            vTaskDelay(pdMS_TO_TICKS(10)); // Every 1/10th seconds
+        }
     }
 }
