@@ -2,6 +2,8 @@
  * Header code for the HUD of the SH1107 Display
  */
 
+#include <time.h>
+
 typedef enum {
     SCREEN_BOOTUP = 0,
     SCREEN_HOME = 1,
@@ -19,9 +21,14 @@ void displayBootup();
 
 void displayHome();
 
+void displayStopwatch();
+
 void displayActive();
 
 void displayTransmission();
+
+void updateHomeScreen(const struct tm *timeinfo, uint8_t battery_pct);
+//void updateHomeScreen(const struct tm *timeinfo);
 
 void updateActiveScreen(int16_t ax, int16_t ay, int16_t az, int16_t gx, int16_t gy, int16_t gz);
 

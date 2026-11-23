@@ -1,5 +1,8 @@
 // Include libraries here
 #include <stdio.h>
+#include <time.h>
+#include <sys/time.h>
+#include <stdlib.h>
 #include "driver/gpio.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -10,6 +13,7 @@
 #include "esp_heap_caps.h"
 #include "esp_psram.h"
 #include "esp_timer.h"
+
 
 // LVGL Headers
 #include "esp_lcd_panel_io.h"
@@ -56,6 +60,8 @@ i2c_master_dev_handle_t mpu_handle;
 esp_lcd_panel_io_handle_t io_handle = NULL;
 esp_lcd_panel_handle_t panel_handle = NULL;
 uint8_t ui_div = 0;
+uint8_t clock_div = 0;  
+
 
 // Get the millisecond count from the internal esp timer
 uint32_t millis() {
@@ -251,7 +257,7 @@ void init_buttons(void) {
     };
     gpio_config(&io_conf);
 
-    // Install GPIO ISR service (ignore ESP_ERR_INVALID_STATE if already installed)
+    // Install GPIO ISR service
     esp_err_t err = gpio_install_isr_service(0);
     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
         ESP_ERROR_CHECK(err);
@@ -292,6 +298,32 @@ static watch_screen_t next_runtime_screen(watch_screen_t current) {
     }
     return next;
 }
+
+void set_rtc_epoch(time_t epoch_sec) {
+    struct timeval tv = {
+        .tv_sec = epoch_sec,
+        .tv_usec = 0
+    };
+    settimeofday(&tv, NULL);
+}
+
+void init_rtc_default(void) {
+    setenv("TZ", "MST7MDT,M3.2.0,M11.1.0", 1);
+    tzset();
+    set_rtc_epoch(1795460400);
+}
+
+static uint8_t get_estimated_battery_pct(void) {
+    const int64_t full_runtime_sec = 14400; // 4 hours, 1% drop every 2.4 minutes
+    int64_t elapsed_sec = esp_timer_get_time() / 1000000;
+    int64_t percent = 100 - ((elapsed_sec * 100) / full_runtime_sec);
+
+    if (percent < 5) {
+        percent = 5; // Floor of 5% while board still has power
+    }
+    return (uint8_t)percent;
+}
+
 
 
 // Tags
@@ -388,6 +420,18 @@ void app_main(void) {
         } else if (button2Pressed) {
             displayHome();
         } else {
+
+            // Time Read
+            if (clock_div >= 50) {
+                clock_div = 0;
+                time_t now;
+                struct tm timeinfo;
+                time(&now);
+                localtime_r(&now, &timeinfo);
+                //updateHomeScreen(&timeinfo);
+                updateHomeScreen(&timeinfo, get_estimated_battery_pct());
+            }
+            clock_div++;
 
             // MPU data read)
             register_address = MPU_REG_ACCEL_XOUT_H;
