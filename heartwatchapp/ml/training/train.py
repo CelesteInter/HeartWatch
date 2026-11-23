@@ -28,16 +28,19 @@ RUNS_DIR = Path(__file__).resolve().parents[1] / "runs"
 PARITY_MAX_WINDOWS = 16
 
 
-def build_model(seed: int):
+def build_model(seed: int, channels: int = len(spec.CHANNELS), n_outputs: int = len(CLASSES)):
+    """The activity CNN. `channels` and `n_outputs` exist only for the
+    input experiment (experiment_inputs.py); their defaults are v0/v1's
+    shape (6 channels in, one output per CLASSES entry)."""
     import keras
 
     keras.utils.set_random_seed(seed)
     return keras.Sequential([
-        keras.Input(shape=(spec.WINDOW_SAMPLES, len(spec.CHANNELS))),
+        keras.Input(shape=(spec.WINDOW_SAMPLES, channels)),
         keras.layers.Conv1D(16, 5, padding="same", activation="relu"),
         keras.layers.Conv1D(32, 5, padding="same", activation="relu"),
         keras.layers.GlobalAveragePooling1D(),
-        keras.layers.Dense(len(CLASSES), activation="softmax"),
+        keras.layers.Dense(n_outputs, activation="softmax"),
     ])
 
 

@@ -53,14 +53,16 @@ MODEL_FILES = ("har_cnn.tflite", "model_meta.json", "parity.npz")
 # ------------------------------------------------------- Keras (TF only here)
 
 def keras_fit(X: np.ndarray, y: np.ndarray, seed: int, epochs: int = EPOCHS,
-              batch_size: int = BATCH_SIZE):
-    """train.py's CNN and training settings, for one seed."""
+              batch_size: int = BATCH_SIZE, channels: int = len(spec.CHANNELS),
+              n_outputs: int = len(CLASSES)):
+    """train.py's CNN and training settings, for one seed. `channels` and
+    `n_outputs` are only for the input experiment; the defaults are v1's."""
     import keras
     import tensorflow as tf
 
     tf.config.experimental.enable_op_determinism()
     keras.utils.set_random_seed(seed)
-    model = build_model(seed)
+    model = build_model(seed, channels, n_outputs)
     model.compile(optimizer=keras.optimizers.Adam(1e-3),
                   loss="sparse_categorical_crossentropy", metrics=["accuracy"])
     model.fit(X, y, epochs=epochs, batch_size=batch_size, shuffle=True, verbose=0)

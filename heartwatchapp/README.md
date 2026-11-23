@@ -608,6 +608,29 @@ mean top probability, the end-of-log count and the clipping counts.
 `ActivityClassifier.load()` also refuses a model whose metadata has no
 `model_version`.
 
+### Experiment: inputs without the wrist angle
+
+v1 learned which way the watch was turned, not how the wrist moved: the
+average of each accelerometer axis is gravity, i.e. the wrist angle, and
+that's the easiest thing for the network to pick up. This experiment asks
+whether the same network learns motion when its input no longer depends on
+the angle. It uses two labels only, **Still** (Standing + Sitting, which
+look the same once the angle is gone) and **Walking**, and compares four
+inputs (`ml/training/input_variants.py`): `raw` (v1's input), `centered`
+(gravity subtracted per window), `magnitude` (only the size of the motion
+and rotation) and `rotation_aug` (training copies turned at random
+angles). Each is scored on held-out files and held-out wearers next to
+the majority guess, the motion rule and tilt-only, against a success rule
+fixed in advance. It's training code only: nothing is exported for the
+app, and the app's classes don't change.
+
+```bash
+heartwatchapp/ml/training/.venv/bin/python -B -m heartwatchapp.ml.training.experiment_inputs --folds-only   # folds + window counts; trains nothing
+heartwatchapp/ml/training/.venv/bin/python -B -m heartwatchapp.ml.training.experiment_inputs
+```
+
+Results go to `ml/runs/<timestamp>-inputs/report.md` and `scores.json`.
+
 ### Reading a watch log dump
 
 The current firmware records into the watch's memory: press button 2 to
@@ -807,7 +830,8 @@ heartwatchapp/
 │   ├── check_model.py   LiteRT-vs-Keras parity and timing, app venv
 │   ├── tools/
 │   │   └── predict_capture.py  run the exported model over a capture or the manifest, app venv
-│   └── training/        own venv: dataset, baselines, folds, train (v0), train_v1, export, report
+│   └── training/        own venv: dataset, baselines, folds, train (v0), train_v1, export, report,
+│                        input_variants + experiment_inputs (the input experiment)
 ├── scripts/
 │   ├── benchmark_ollama.py  standalone viability check, run by hand
 │   ├── demo_db.py           builds the demo session on a fresh DB (shared by the two below)
@@ -834,6 +858,7 @@ heartwatchapp/
     ├── test_db_path.py        DB path defaults follow a patched db.DB_PATH; main window leaves the real DB alone
     ├── test_ml_pipeline.py    activity model: spec, parsers (legacy + log dump), resampling, windows, DB skew, guards, LiteRT parity
     ├── test_ml_v1.py          end-of-log rows, clipping, explicit ranges, manifest, whole-file folds, train_v1 (stubbed), predict tool
+    ├── test_ml_inputs.py      input experiment: transforms, Still/Walking map, folds, success rule, run (stubbed)
     ├── test_recording.py      Start/Stop recording: nothing at launch, labels, windows, crash recovery, quit, theme
     └── test_sources.py        sources/base.py stays Qt- and asyncio-free; DummySource schedule and values
 ```
