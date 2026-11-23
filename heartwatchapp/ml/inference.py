@@ -46,12 +46,17 @@ def expected_metadata() -> dict:
 
 
 def check_metadata(meta: dict) -> None:
-    """Raise ModelMetadataError listing every field that differs."""
+    """Raise ModelMetadataError listing every field that differs, and if
+    the metadata has no model_version (every prediction stored in the
+    database is tagged with it, so an unnamed model can't be traced)."""
     problems = [
         f"{key}: model has {meta.get(key)!r}, app expects {want!r}"
         for key, want in expected_metadata().items()
         if meta.get(key) != want
     ]
+    version = meta.get("model_version")
+    if not isinstance(version, str) or not version.strip():
+        problems.insert(0, f"model_version: missing or empty ({version!r})")
     if problems:
         raise ModelMetadataError("model metadata mismatch -- " + "; ".join(problems))
 

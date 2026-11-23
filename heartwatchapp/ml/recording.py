@@ -88,6 +88,11 @@ class Recording:
     # Set by preprocess.resample(): True where a 100 ms bin had no samples
     # (that row of `imu` is NaN). None for raw recordings.
     gap: np.ndarray | None = None
+    # Segment breaks: sample indices i (0 < i < N, sorted) where a new
+    # segment starts because an end-of-log row sat between samples i-1 and
+    # i. No window may contain samples from both sides; preprocess.prepare()
+    # handles each segment on its own. None (or empty) = one segment.
+    breaks: np.ndarray | None = None
 
     def __len__(self) -> int:
         return len(self.ts_ms)
@@ -97,6 +102,57 @@ def _check_label(label: str | None) -> str | None:
     if label is not None and label not in CLASSES:
         raise ValueError(f"label {label!r} is not one of {CLASSES}")
     return label
+
+
+def scales_for(accel_range_g: float, gyro_range_dps: float) -> tuple[float, float]:
+    """(g per count, deg/s per count) for the sensor's full-scale ranges,
+    from spec.ACCEL_COUNTS_PER_G / GYRO_COUNTS_PER_DPS. An unsupported
+    range (anything the sensor can't be set to) is a ValueError: the
+    caller must say what the capture was recorded at, never guess."""
+    accel = spec.ACCEL_COUNTS_PER_G.get(accel_range_g)
+    gyro = spec.GYRO_COUNTS_PER_DPS.get(gyro_range_dps)
+    if accel is None:
+        raise ValueError(f"accel range {accel_range_g!r} g is not one of "
+                         f"{sorted(spec.ACCEL_COUNTS_PER_G)}")
+    if gyro is None:
+        raise ValueError(f"gyro range {gyro_range_dps!r} deg/s is not one of "
+                         f"{sorted(spec.GYRO_COUNTS_PER_DPS)}")
+    return 1 / accel, 1 / gyro
+
+
+def split_eol(counts: np.ndarray) -> tuple[np.ndarray, np.ndarray, int]:
+    """End-of-log rows: a reading with all six values exactly 0 is the
+    firmware's "end of log" marker (interrupt_rewrite >= ef150a7), not a
+    sample -- a real watch at rest always reads about 1 g. Returns (keep
+    mask over rows, breaks over the kept rows, number of EOL rows). A break
+    at the very start or end of the file is no break at all."""
+    eol = np.all(counts == 0, axis=1) if len(counts) else np.zeros(0, dtype=bool)
+    keep = ~eol
+    n_kept = int(keep.sum())
+    kept_before = np.cumsum(keep) - keep  # kept rows before each row
+    cuts = np.unique(kept_before[eol])
+    breaks = cuts[(cuts > 0) & (cuts < n_kept)].astype(np.int64)
+    return keep, breaks, int(eol.sum())
+
+
+def clipping_counts(counts: np.ndarray) -> dict:
+    """Raw readings at or within spec.CLIP_MARGIN_COUNTS of +32767 / -32768,
+    per axis, plus rows where any (accel / gyro) axis clipped. Counted on
+    raw counts because the 100 ms averaging hides clipping. Report-only."""
+    m = spec.CLIP_MARGIN_COUNTS
+    clipped = (counts >= 32767 - m) | (counts <= -32768 + m)
+    rows = int(len(counts))
+    rows_any = int(clipped.any(axis=1).sum()) if rows else 0
+    fraction = rows_any / rows if rows else 0.0
+    return {
+        "per_axis": {ch: int(clipped[:, i].sum()) for i, ch in enumerate(spec.CHANNELS)},
+        "rows": rows,
+        "rows_any": rows_any,
+        "rows_accel": int(clipped[:, :3].any(axis=1).sum()) if rows else 0,
+        "rows_gyro": int(clipped[:, 3:].any(axis=1).sum()) if rows else 0,
+        "fraction_rows": fraction,
+        "warn": bool(rows and fraction >= spec.CLIP_WARN_FRACTION),
+    }
 
 
 def counts_to_units(counts: np.ndarray, accel_scale: float, gyro_scale: float) -> np.ndarray:
@@ -140,30 +196,54 @@ def read_legacy_counts(path: str | Path) -> tuple[np.ndarray, np.ndarray, dict, 
     return ts_arr, counts_arr, line_counts, sha256
 
 
-def from_legacy_capture(path: str | Path, label: str | None = None) -> Recording:
+def from_legacy_capture(
+    path: str | Path,
+    label: str | None = None,
+    *,
+    accel_range_g: float = spec.LEGACY_ACCEL_RANGE_G,
+    gyro_range_dps: float = spec.LEGACY_GYRO_RANGE_DPS,
+) -> Recording:
     """A Recording from one capture log. `label` defaults to the file name
     (Standing.txt -> "Standing") when that is one of CLASSES, else None.
-    A label (given or from the name) outside CLASSES is rejected."""
+    A label (given or from the name) outside CLASSES is rejected.
+
+    Ranges: the defaults (+-2 g, +-250 deg/s) are for the OLD captures only
+    (firmware that never sets the range registers). Anything recorded on
+    configured firmware must pass its real ranges; ml/manifest.py always
+    passes them from captures.csv.
+
+    End-of-log rows (all six values 0) are dropped and counted in
+    meta["eol_rows"], and each becomes a segment break (`breaks`). Raw
+    clipping is counted in meta["clipping"]. Timestamps are checked for
+    going backwards on every IMU line, EOL rows included."""
     path = Path(path)
     if label is None and path.stem in CLASSES:
         label = path.stem
     _check_label(label)
+    accel_scale, gyro_scale = scales_for(accel_range_g, gyro_range_dps)
     ts, counts, line_counts, sha256 = read_legacy_counts(path)
-    imu = counts_to_units(counts, spec.LEGACY_ACCEL_SCALE, spec.LEGACY_GYRO_SCALE)
+    keep, breaks, n_eol = split_eol(counts)
+    counts = counts[keep]
     return Recording(
-        ts_ms=ts,
-        imu=imu,
+        ts_ms=ts[keep],
+        imu=counts_to_units(counts, accel_scale, gyro_scale),
         label=label,
         source="legacy-capture",
         meta={
             "path": str(path),
             "sha256": sha256,
-            "accel_scale": spec.LEGACY_ACCEL_SCALE,
-            "gyro_scale": spec.LEGACY_GYRO_SCALE,
+            "accel_range_g": accel_range_g,
+            "gyro_range_dps": gyro_range_dps,
+            "accel_scale": accel_scale,
+            "gyro_scale": gyro_scale,
             "timestamps": "device uptime ms",
             "line_counts": line_counts,
+            "eol_rows": n_eol,
+            "segments": len(breaks) + 1 if len(counts) else 0,
+            "clipping": clipping_counts(counts),
             "hardware_note": HARDWARE_NOTE,
         },
+        breaks=breaks,
     )
 
 
@@ -179,8 +259,9 @@ def from_log_dump(
     path: str | Path,
     rate_hz: float,
     label: str | None = None,
-    accel_scale: float = spec.LEGACY_ACCEL_SCALE,
-    gyro_scale: float = spec.LEGACY_GYRO_SCALE,
+    *,
+    accel_range_g: float,
+    gyro_range_dps: float,
 ) -> Recording:
     """A Recording from one PSRAM log dump the watch printed over serial
     (button 2: start, stop, then press again to print).
@@ -209,9 +290,14 @@ def from_log_dump(
       cut short), "other". No reading lines at all -> ValueError.
     - Log numbers must go up by exactly 1 per reading (any start). A skip
       or a repeat -> ValueError naming the file line.
-    - Counts -> g and deg/s with counts_to_units(accel_scale, gyro_scale);
-      the defaults are the sensor's power-on ranges (+-2 g, +-250 deg/s),
-      which firmware 7f462d8 still uses.
+    - Counts -> g and deg/s with the scales for `accel_range_g` and
+      `gyro_range_dps` (scales_for()). Both are REQUIRED, with no default:
+      the dump carries no range information, so the caller states it.
+    - A reading with all six values 0 is the firmware's end-of-log record
+      (interrupt_rewrite >= ef150a7): it's dropped, counted in
+      meta["eol_rows"], and becomes a segment break. Its log number still
+      counts for the continuity check above. Raw clipping is counted in
+      meta["clipping"].
     - `label`, else the file name's part before the first "_"
       (Sitting_20261110_03.txt, or plain Standing.txt); must be in CLASSES,
       else ValueError.
@@ -221,6 +307,7 @@ def from_log_dump(
     path = Path(path)
     if not rate_hz > 0:  # also rejects NaN
         raise ValueError(f"rate_hz must be > 0, got {rate_hz!r}")
+    accel_scale, gyro_scale = scales_for(accel_range_g, gyro_range_dps)
     if label is None:
         label = _label_from_dump_name(path)
         if label is None:
@@ -270,8 +357,10 @@ def from_log_dump(
     # divide 1000 (10, 50, 100 Hz); otherwise rounded to the nearest ms.
     ts = np.rint(n_rel * (1000.0 / rate_hz)).astype(np.int64)
     counts_arr = np.array(counts, dtype=np.int64).reshape(-1, 6)
+    keep, breaks, n_eol = split_eol(counts_arr)
+    counts_arr = counts_arr[keep]
     return Recording(
-        ts_ms=ts,
+        ts_ms=ts[keep],
         imu=counts_to_units(counts_arr, accel_scale, gyro_scale),
         label=label,
         source="log-dump",
@@ -280,16 +369,22 @@ def from_log_dump(
             "path": str(path),
             "source_file": path.name,
             "sha256": sha256,
+            "accel_range_g": accel_range_g,
+            "gyro_range_dps": gyro_range_dps,
             "accel_scale": accel_scale,
             "gyro_scale": gyro_scale,
             "timestamps": f"assumed fixed rate {rate_hz:g} Hz from log number",
             "rate_hz": rate_hz,
             "first_log": logs[0],
-            "n_samples": len(logs),
+            "n_samples": int(len(counts_arr)),
             "line_counts": line_counts,
-            "heartrate": np.array(hr, dtype=np.int64),
+            "eol_rows": n_eol,
+            "segments": len(breaks) + 1 if len(counts_arr) else 0,
+            "clipping": clipping_counts(counts_arr),
+            "heartrate": np.array(hr, dtype=np.int64)[keep],
             "hardware_note": LOG_DUMP_HARDWARE_NOTE,
         },
+        breaks=breaks,
     )
 
 

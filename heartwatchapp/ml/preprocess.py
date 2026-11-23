@@ -14,6 +14,10 @@ Plain-language overview, in the order prepare() runs the steps:
 
 prepare() is the ONLY entry point training and the app use, so both see
 exactly the same numbers. No PySide6 here (tests/test_ml_pipeline.py).
+
+End-of-log rows (the watch's pause marker) split a recording into
+segments; prepare() runs the four steps on each segment separately, so a
+window never mixes data from before and after a pause.
 """
 
 from __future__ import annotations
@@ -43,6 +47,9 @@ def resample(rec: Recording) -> Recording:
     (a mean of one sample), each stamped 100 ms later (its bin's end)."""
     if rec.gap is not None:
         raise ValueError("recording is already resampled")
+    if rec.breaks is not None and len(rec.breaks):
+        raise ValueError("recording has segment breaks (end-of-log rows); resample each "
+                         "segment from split_segments(), or use prepare()")
     if len(rec) == 0:
         raise ValueError("empty recording")
     ts = np.asarray(rec.ts_ms, dtype=np.int64)
@@ -99,7 +106,44 @@ def normalize(X: np.ndarray) -> np.ndarray:
     return (np.asarray(X, dtype=np.float64) / norm).astype(np.float32)
 
 
+def split_segments(rec: Recording) -> list[Recording]:
+    """Cut a raw recording at its segment breaks (end-of-log rows). Each
+    piece has breaks=None and meta["segment"] = its number; a recording
+    without breaks comes back unchanged as the only piece."""
+    if rec.breaks is None or not len(rec.breaks):
+        return [rec]
+    edges = [0, *(int(b) for b in rec.breaks), len(rec)]
+    return [
+        dataclasses.replace(rec, ts_ms=rec.ts_ms[a:b], imu=rec.imu[a:b], breaks=None,
+                            meta=dict(rec.meta, segment=k))
+        for k, (a, b) in enumerate(zip(edges[:-1], edges[1:]))
+    ]
+
+
+def _prepare_one(rec: Recording, hop_samples: int) -> Windows:
+    return windows(trim(resample(rec), spec.TRIM_S), hop_samples)
+
+
 def prepare(rec: Recording, hop_samples: int) -> Windows:
-    """resample -> trim(TRIM_S) -> windows -> normalize. The one entry point."""
-    w = windows(trim(resample(rec), spec.TRIM_S), hop_samples)
+    """resample -> trim(TRIM_S) -> windows -> normalize. The one entry point.
+
+    A recording with segment breaks (end-of-log rows) is handled one
+    segment at a time, each with its own 5 s trim at both ends, so no
+    window ever holds samples from both sides of a break. The results are
+    joined in order; start_index then counts through the trimmed segments
+    laid end to end, and n_samples / dropped are totals. A recording
+    without breaks takes exactly the old single path."""
+    if rec.breaks is None or not len(rec.breaks):
+        w = _prepare_one(rec, hop_samples)  # exactly the old path (empty input still raises)
+    else:
+        # Breaks are strictly inside the recording, so no segment is empty.
+        parts = [_prepare_one(seg, hop_samples) for seg in split_segments(rec)]
+        offsets = np.cumsum([0] + [p.n_samples for p in parts[:-1]])
+        w = Windows(
+            np.concatenate([p.X for p in parts]),
+            np.concatenate([p.end_ts for p in parts]).astype(np.int64),
+            np.concatenate([p.start_index + o for p, o in zip(parts, offsets)]).astype(np.int64),
+            int(sum(p.dropped for p in parts)),
+            int(sum(p.n_samples for p in parts)),
+        )
     return w._replace(X=normalize(w.X))

@@ -466,23 +466,31 @@ The app will guess **Sitting, Walking, Standing or Running** from the
 watch's motion sensor. Version 0 builds every step of that end to end, but
 **it is a plumbing test, not an accuracy result**: about 2.7 minutes of
 data, from one person, with one recording each of two activities
-(`HeartWatch/test/Standing.txt`, `HeartWatch/test/Walking.txt`). The model
-is **not wired into any screen**. The Live Monitor and the predictions
-table still use the `demo-dummy` generator.
+(`HeartWatch/test/Standing.txt`, `HeartWatch/test/Walking.txt`). v0 learned
+the wrist angle rather than the motion (it calls every Running and every
+new Walking window "Standing"). The v1 pipeline (below) adds Bobby's
+captures, a manifest, and scores that always hold out whole files. The
+model is **not wired into any screen**. The Live Monitor and the
+predictions table still use the `demo-dummy` generator.
 
 **The rule (all numbers in `ml/spec.py`):**
 
 1. **Read.** `ml/recording.py` turns a capture log (or a database session)
-   into motion readings in g and °/s. The captures' raw counts are scaled
-   by 1/16384 g and 1/131 °/s, the sensor's power-on defaults, because
-   firmware 1eabdb8 never sets the range. Database sessions from `seed`,
-   `demo` or `demo-session`, or with scales exactly (1.0, 1.0), are refused
-   because their stored scales are placeholders.
+   into motion readings in g and °/s. The scale comes from the sensor
+   range the capture was recorded at, which the caller must say (the
+   manifest, `ml/captures.csv`, says it for every capture). Every capture
+   so far was recorded at the power-on defaults, ±2 g and ±250 °/s
+   (1/16384 g and 1/131 °/s per count), because no firmware sets the range
+   yet. An all-zero reading is an **end-of-log marker**, not a reading
+   (see below). Database sessions from `seed`, `demo` or `demo-session`,
+   or with scales exactly (1.0, 1.0), are refused because their stored
+   scales are placeholders.
 2. **10 Hz.** Each 100 ms slot of raw readings is averaged into one sample
    (`ml/preprocess.py`). Slots are half-open, `[t, t + 100 ms)`, and each
    sample is stamped at its slot's end. An empty slot is a gap and is
    never filled in.
-3. **Trim** the first and last 5 seconds of each recording.
+3. **Trim** the first and last 5 seconds of each recording (of each
+   segment, when end-of-log markers split it).
 4. **Windows** of 5 seconds (50 samples), stamped at their end like the
    predictions table. Any window touching a gap is dropped. Training uses
    50% overlap; live predictions won't overlap (one every 5 s).
@@ -532,6 +540,74 @@ normalization) differs from `ml/spec.py`. `tests/test_ml_pipeline.py`
 covers all of this, and skips the LiteRT parity check when no model has
 been exported.
 
+### v1: captures, the manifest, and honest scores
+
+**Adding a capture.** Put the file in `HeartWatch/test/` and add one row
+to `heartwatchapp/ml/captures.csv`: the activity (`label`, one of
+Sitting, Walking, Standing, Running), who wore the watch (`wearer`), the
+wrist and orientation (`unknown` is fine until someone checks), who
+uploaded it and in which commit, the firmware, the sensor ranges it was
+recorded at (`accel_range_g`, `gyro_range_dps`), `use` (`train`, or
+`exclude` to keep it out of training) and any `notes`. The label comes
+from this row, never from the file name. If the file name itself names an
+activity (`Standing.txt`), the two must agree, or loading stops with an
+error naming both. `ml/manifest.py` checks every row when it loads.
+
+**The end-of-log marker.** Bobby's firmware writes one reading with all
+six values 0 at every pause and at the end of a recording. A real watch at
+rest always reads about 1 g, so this can't be a real reading. The parsers
+drop it, count it (`meta["eol_rows"]`), and treat it as a **break**: the
+recording is cut there into segments, each segment gets its own 5 s trim
+at both ends, and no 5-second window ever mixes data from before and after
+a pause. A file with no markers gives exactly the same windows as before.
+
+**Clipping.** While reading, each capture counts raw readings that hit
+the sensor's limits (within 10 counts of ±32768), per axis, before the
+100 ms averaging hides them. 1% of rows or more clipped is flagged
+(`spec.CLIP_WARN_FRACTION`). It's report-only: the manifest's `use`
+column decides what's excluded (Running.txt clips in 24.3% of rows).
+
+**Why we score by holding out whole files.** Neighbouring windows from the
+same recording look almost the same, so if training and test windows are
+shuffled together, a model can score well just by recognising the
+recording, for example by how the watch was tilted. So every v1 score
+holds out a whole file: train on all the other files, test on the hidden
+one (one fold per file). For Standing vs Walking we also hold out a whole
+person (train on Dylan, test on Bobby, and the other way round). The CNN
+is trained three times per fold (seeds 0, 1, 2), and we report the
+average and the worst next to three simple rules fitted on the same
+training files: always-guess-the-majority, a motion threshold, and
+tilt-only. A file that's the only one of its activity (BobbySitting.txt
+today) can't be held out, so its fold says "can't test" and isn't scored.
+
+**Train v1** (training venv, repo root):
+
+```bash
+heartwatchapp/ml/training/.venv/bin/python -B -m heartwatchapp.ml.training.train_v1 --folds-only   # window counts per fold; trains nothing
+heartwatchapp/ml/training/.venv/bin/python -B -m heartwatchapp.ml.training.train_v1
+```
+
+The full run first copies the current model to
+`ml/models/archive/<its version>/` (once; never overwritten or deleted),
+runs every fold, trains the final `har-cnn-v1` on all `train` files,
+exports it like v0, and writes `ml/runs/<timestamp>/report.md` and
+`scores.json`. `model_meta.json` also records the manifest's SHA-256, the
+files and labels used, window counts per class, the fold results, the
+seeds, and the git commit (and whether the tree was clean). The v0 command
+above still works, for reproducing v0.
+
+**Run the model over a capture** (app venv; writes nothing):
+
+```bash
+heartwatchapp/.venv/bin/python -B -m heartwatchapp.ml.tools.predict_capture HeartWatch/test/BobbyStand.txt --accel-range-g 2 --gyro-range-dps 250
+heartwatchapp/.venv/bin/python -B -m heartwatchapp.ml.tools.predict_capture heartwatchapp/ml/captures.csv
+```
+
+It prints how many non-overlapping 5 s windows got each activity, the
+mean top probability, the end-of-log count and the clipping counts.
+`ActivityClassifier.load()` also refuses a model whose metadata has no
+`model_version`.
+
 ### Reading a watch log dump
 
 The current firmware records into the watch's memory: press button 2 to
@@ -561,8 +637,12 @@ must give (`rate_hz`, no default). That rate is an **assumption** until
 the firmware either stamps each reading or samples on a fixed timer, and
 every such recording says so in `meta["timestamps"]`.
 
+The sensor ranges are required too (`accel_range_g`, `gyro_range_dps`;
+also no default): the dump doesn't say what the sensor was set to.
+
 ```python
-rec = recording.from_log_dump("Walking_20261110_01.txt", rate_hz=50)
+rec = recording.from_log_dump("Walking_20261110_01.txt", rate_hz=50,
+                              accel_range_g=2, gyro_range_dps=250)
 ```
 
 ## Where numbers come from
@@ -720,10 +800,14 @@ heartwatchapp/
 ├── ml/
 │   ├── spec.py          every pipeline number (10 Hz, 50-sample window, trim, normalization)
 │   ├── recording.py     capture logs / watch log dumps / DB sessions -> Recording in g and deg/s
-│   ├── preprocess.py    resample -> trim -> windows -> normalize (prepare())
+│   ├── captures.csv     the capture manifest: label, wearer, firmware, ranges, train/exclude
+│   ├── manifest.py      reads and checks captures.csv; loads a row as a Recording
+│   ├── preprocess.py    resample -> trim -> windows -> normalize (prepare()), per segment
 │   ├── inference.py     ActivityClassifier (LiteRT), metadata checks; CLASSES
 │   ├── check_model.py   LiteRT-vs-Keras parity and timing, app venv
-│   └── training/        own venv: dataset, baselines, train, export, report
+│   ├── tools/
+│   │   └── predict_capture.py  run the exported model over a capture or the manifest, app venv
+│   └── training/        own venv: dataset, baselines, folds, train (v0), train_v1, export, report
 ├── scripts/
 │   ├── benchmark_ollama.py  standalone viability check, run by hand
 │   ├── demo_db.py           builds the demo session on a fresh DB (shared by the two below)
@@ -749,6 +833,7 @@ heartwatchapp/
     ├── test_ai_bar.py         AI bar offscreen: answers, stale replies, timeout, preload
     ├── test_db_path.py        DB path defaults follow a patched db.DB_PATH; main window leaves the real DB alone
     ├── test_ml_pipeline.py    activity model: spec, parsers (legacy + log dump), resampling, windows, DB skew, guards, LiteRT parity
+    ├── test_ml_v1.py          end-of-log rows, clipping, explicit ranges, manifest, whole-file folds, train_v1 (stubbed), predict tool
     ├── test_recording.py      Start/Stop recording: nothing at launch, labels, windows, crash recovery, quit, theme
     └── test_sources.py        sources/base.py stays Qt- and asyncio-free; DummySource schedule and values
 ```

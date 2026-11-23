@@ -228,7 +228,7 @@ class LogDumpParserTest(unittest.TestCase):
         ])
 
     def test_real_shaped_line_units_and_heart_rate(self):
-        rec = recording.from_log_dump(self.dump(), rate_hz=50)
+        rec = recording.from_log_dump(self.dump(), rate_hz=50, accel_range_g=2, gyro_range_dps=250)
         self.assertEqual(rec.imu.shape, (3, 6))
         # 16384 counts = 1 g, 131 counts = 1 deg/s (sensor defaults).
         np.testing.assert_allclose(rec.imu[0], [1, -0.5, 0, 1, -2, 0], rtol=0, atol=1e-12)
@@ -237,7 +237,7 @@ class LogDumpParserTest(unittest.TestCase):
         self.assertEqual(rec.source, "log-dump")
 
     def test_line_without_prefix(self):
-        rec = recording.from_log_dump(self.dump(prefix=False), rate_hz=50)
+        rec = recording.from_log_dump(self.dump(prefix=False), rate_hz=50, accel_range_g=2, gyro_range_dps=250)
         self.assertEqual(len(rec), 3)
         np.testing.assert_allclose(rec.imu[0], [1, -0.5, 0, 1, -2, 0], rtol=0, atol=1e-12)
 
@@ -245,50 +245,50 @@ class LogDumpParserTest(unittest.TestCase):
         path = self.write("Walking.txt", [
             "I (1) esp: log0 :ax:1 ,ay : -2,az:  3,  gx:4,gy:5 , gz :6,heartrate:7  ",
         ])
-        rec = recording.from_log_dump(path, rate_hz=10)
+        rec = recording.from_log_dump(path, rate_hz=10, accel_range_g=2, gyro_range_dps=250)
         np.testing.assert_allclose(rec.imu[0] / self.SCALES, [1, -2, 3, 4, 5, 6], rtol=1e-12)
         self.assertEqual(rec.meta["heartrate"].tolist(), [7])
 
     def test_negative_values_stay_negative(self):
         path = self.write("Walking.txt", [dump_line(0, [-16384, -1, -2, -131, -1, -2])])
-        rec = recording.from_log_dump(path, rate_hz=50)
+        rec = recording.from_log_dump(path, rate_hz=50, accel_range_g=2, gyro_range_dps=250)
         self.assertTrue((rec.imu[0] < 0).all())
         np.testing.assert_allclose(rec.imu[0, [0, 3]], [-1, -1], rtol=0, atol=1e-12)
 
     def test_non_reading_lines_are_skipped_and_counted(self):
-        rec = recording.from_log_dump(self.dump(), rate_hz=50)
+        rec = recording.from_log_dump(self.dump(), rate_hz=50, accel_range_g=2, gyro_range_dps=250)
         self.assertEqual(rec.meta["line_counts"],
                          {"imu": 3, "blank": 1, "log": 2, "malformed": 0, "other": 1})
 
     def test_no_reading_lines_raises(self):
         path = self.write("Walking.txt", self.BOOT)
         with self.assertRaisesRegex(ValueError, r"Walking\.txt.*no reading lines.*log<N>: ax:"):
-            recording.from_log_dump(path, rate_hz=50)
+            recording.from_log_dump(path, rate_hz=50, accel_range_g=2, gyro_range_dps=250)
 
     def test_skipped_log_number_raises_with_line_number(self):
         path = self.write("Walking.txt", [dump_line(0, [0] * 6), dump_line(1, [0] * 6),
                                           dump_line(3, [0] * 6)])
         with self.assertRaisesRegex(ValueError, r"line 3\b.*expected log2, found log3"):
-            recording.from_log_dump(path, rate_hz=50)
+            recording.from_log_dump(path, rate_hz=50, accel_range_g=2, gyro_range_dps=250)
 
     def test_repeated_log_number_raises_with_line_number(self):
         # The dump printed twice into one file: log0, log1, then log0 again.
         path = self.write("Walking.txt", ["", dump_line(0, [0] * 6), dump_line(1, [0] * 6),
                                           dump_line(0, [0] * 6)])
         with self.assertRaisesRegex(ValueError, r"line 4\b.*expected log2, found log0.*twice"):
-            recording.from_log_dump(path, rate_hz=50)
+            recording.from_log_dump(path, rate_hz=50, accel_range_g=2, gyro_range_dps=250)
 
     def test_first_log_need_not_be_zero(self):
-        rec = recording.from_log_dump(self.dump(start=5), rate_hz=50)
+        rec = recording.from_log_dump(self.dump(start=5), rate_hz=50, accel_range_g=2, gyro_range_dps=250)
         self.assertEqual(rec.meta["first_log"], 5)
         self.assertEqual(rec.ts_ms.tolist(), [0, 20, 40])
 
     def test_timestamps_from_log_number_and_rate(self):
         path = self.dump(n=60)
-        at50 = recording.from_log_dump(path, rate_hz=50)
+        at50 = recording.from_log_dump(path, rate_hz=50, accel_range_g=2, gyro_range_dps=250)
         self.assertEqual(at50.ts_ms.dtype, np.int64)
         self.assertEqual(int(at50.ts_ms[50]), 1000)
-        at10 = recording.from_log_dump(path, rate_hz=10)
+        at10 = recording.from_log_dump(path, rate_hz=10, accel_range_g=2, gyro_range_dps=250)
         self.assertEqual(int(at10.ts_ms[10]), 1000)
         self.assertTrue((np.diff(at10.ts_ms) > 0).all())
 
@@ -297,26 +297,26 @@ class LogDumpParserTest(unittest.TestCase):
         for rate in (0, -10, float("nan")):
             with self.subTest(rate=rate):
                 with self.assertRaisesRegex(ValueError, "rate_hz"):
-                    recording.from_log_dump(path, rate_hz=rate)
+                    recording.from_log_dump(path, rate_hz=rate, accel_range_g=2, gyro_range_dps=250)
 
     def test_labels(self):
-        self.assertEqual(recording.from_log_dump(self.dump("Sitting_20261110_03.txt"), 50).label,
+        self.assertEqual(recording.from_log_dump(self.dump("Sitting_20261110_03.txt"), 50, accel_range_g=2, gyro_range_dps=250).label,
                          "Sitting")
-        self.assertEqual(recording.from_log_dump(self.dump("Walking.txt"), 50).label, "Walking")
+        self.assertEqual(recording.from_log_dump(self.dump("Walking.txt"), 50, accel_range_g=2, gyro_range_dps=250).label, "Walking")
         self.assertEqual(
-            recording.from_log_dump(self.dump("Sitting_20261110_03.txt"), 50, label="Running").label,
+            recording.from_log_dump(self.dump("Sitting_20261110_03.txt"), 50, label="Running", accel_range_g=2, gyro_range_dps=250).label,
             "Running")
-        self.assertEqual(recording.from_log_dump(self.dump("dump.txt"), 50, label="Standing").label,
+        self.assertEqual(recording.from_log_dump(self.dump("dump.txt"), 50, label="Standing", accel_range_g=2, gyro_range_dps=250).label,
                          "Standing")
         with self.assertRaisesRegex(ValueError, "label"):
-            recording.from_log_dump(self.dump("dump_20261110_01.txt"), 50)
+            recording.from_log_dump(self.dump("dump_20261110_01.txt"), 50, accel_range_g=2, gyro_range_dps=250)
         with self.assertRaises(ValueError):  # case must match, like the legacy parser
-            recording.from_log_dump(self.dump("sitting_20261110_01.txt"), 50)
+            recording.from_log_dump(self.dump("sitting_20261110_01.txt"), 50, accel_range_g=2, gyro_range_dps=250)
         with self.assertRaises(ValueError):
-            recording.from_log_dump(self.dump("dump.txt"), 50, label="Jogging")
+            recording.from_log_dump(self.dump("dump.txt"), 50, label="Jogging", accel_range_g=2, gyro_range_dps=250)
 
     def test_meta(self):
-        rec = recording.from_log_dump(self.dump("Sitting_20261110_03.txt"), rate_hz=50)
+        rec = recording.from_log_dump(self.dump("Sitting_20261110_03.txt"), rate_hz=50, accel_range_g=2, gyro_range_dps=250)
         m = rec.meta
         self.assertEqual(m["format"], "log-dump-v1")
         self.assertIn("assumed", m["timestamps"])
@@ -329,7 +329,7 @@ class LogDumpParserTest(unittest.TestCase):
         self.assertEqual(len(m["sha256"]), 64)
 
     def test_custom_scales_are_used_and_recorded(self):
-        rec = recording.from_log_dump(self.dump(), 50, accel_scale=1 / 8192, gyro_scale=1 / 65.5)
+        rec = recording.from_log_dump(self.dump(), 50, accel_range_g=4, gyro_range_dps=500)
         np.testing.assert_allclose(rec.imu[0, :2], [2, -1], rtol=0, atol=1e-12)
         self.assertEqual(rec.meta["accel_scale"], 1 / 8192)
         self.assertEqual(rec.meta["gyro_scale"], 1 / 65.5)
@@ -340,12 +340,12 @@ class LogDumpParserTest(unittest.TestCase):
         line = dump_line(0, [1, 2, 3, 4, 5, 6]).replace("heartrate:", "hr:")
         path = self.write("Walking.txt", [line, line.replace("log0", "log1")])
         with self.assertRaisesRegex(ValueError, "no reading lines"):
-            recording.from_log_dump(path, rate_hz=50)
+            recording.from_log_dump(path, rate_hz=50, accel_range_g=2, gyro_range_dps=250)
 
     def test_legacy_lines_are_not_log_dump_readings(self):
         path = self.write("Walking.txt", [imu_line(1000, [1, 2, 3, 4, 5, 6])])
         with self.assertRaisesRegex(ValueError, "no reading lines"):
-            recording.from_log_dump(path, rate_hz=50)
+            recording.from_log_dump(path, rate_hz=50, accel_range_g=2, gyro_range_dps=250)
 
     def test_end_to_end_through_prepare(self):
         # 30 s at 50 Hz = 1500 readings, ts 0..29980 ms -> 300 bins of 5;
@@ -357,7 +357,7 @@ class LogDumpParserTest(unittest.TestCase):
                       + [rng.randint(-3000, 3000) for _ in range(3)], 70)
             for i in range(1500)
         ]
-        rec = recording.from_log_dump(self.write("Running_20261110_01.txt", lines), rate_hz=50)
+        rec = recording.from_log_dump(self.write("Running_20261110_01.txt", lines), rate_hz=50, accel_range_g=2, gyro_range_dps=250)
         w = preprocess.prepare(rec, spec.TRAIN_HOP_SAMPLES)
         self.assertEqual(w.X.shape, (7, 50, 6))
         self.assertEqual((w.dropped, w.n_samples), (0, 200))

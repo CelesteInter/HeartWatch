@@ -1,0 +1,7 @@
+path,label,wearer,wrist,orientation,uploaded_by,commit,firmware,accel_range_g,gyro_range_dps,use,notes
+HeartWatch/test/Standing.txt,Standing,Dylan,unknown,unknown,Zachary,1eabdb8,1eabdb8,2,250,train,"110 s at ~72 Hz, fidgety standing; same boot as Walking.txt"
+HeartWatch/test/Walking.txt,Walking,Dylan,unknown,unknown,Zachary,1eabdb8,1eabdb8,2,250,train,"51 s at ~67 Hz; same boot as Standing.txt; 12 gaps of 70-80 ms"
+HeartWatch/test/Running.txt,Running,Bobby,unknown,unknown,Bobby,b85d4f4,"local build, likely interrupt_rewrite >= ef150a7 (unconfirmed)",2,250,exclude,"Excluded from training: clips at +-2 g in 5,906/24,277 rows (24.3%): accel 4,624 (19.05%), gyro 2,692 (11.09%). Only run through a model as a separate check."
+HeartWatch/test/BobbyStand.txt,Standing,Bobby,unknown,unknown,Bobby,196fd30,"local build, likely interrupt_rewrite >= ef150a7 (unconfirmed)",2,250,train,"229 s at ~112 Hz, very still standing; ends with one end-of-log row; 70-80 ms stalls every 5 s"
+HeartWatch/test/BobbyWalking.txt,Walking,Bobby,unknown,unknown,Bobby,196fd30,"local build, likely interrupt_rewrite >= ef150a7 (unconfirmed)",2,250,train,"9 s setup, end-of-log row, 583 s pause, then 337 s walking; 70-80 ms stalls every 5 s"
+HeartWatch/test/BobbySitting.txt,Sitting,Bobby,unknown,unknown,Bobby,196fd30,"local build, likely interrupt_rewrite >= ef150a7 (unconfirmed)",2,250,train,"only Sitting session; Sitting vs Standing separable by tilt only. Two short bits and pauses, then 130 s sitting"
