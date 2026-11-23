@@ -532,6 +532,39 @@ normalization) differs from `ml/spec.py`. `tests/test_ml_pipeline.py`
 covers all of this, and skips the LiteRT parity check when no model has
 been exported.
 
+### Reading a watch log dump
+
+The current firmware records into the watch's memory: press button 2 to
+start, again to stop, and a third time to print the whole recording over
+USB serial, one line per reading:
+
+```
+I (52310) esp: log0: ax: 4612, ay: -13240, az: -2848, gx: 2811, gy: 120, gz: -5, heartrate: 54
+```
+
+To save one, open a serial monitor that logs to a file (for example
+`pio device monitor -b 115200 | tee Walking_20261110_01.txt`), press
+button 2 the third time, wait until the lines stop, and close it. Boot
+messages and other log lines in the file are fine; they're skipped and
+counted. One recording per file: a dump printed twice into the same file
+is refused.
+
+Name each file `<Activity>_<YYYYMMDD>_<NN>.txt`, e.g.
+`Sitting_20261110_03.txt`. The activity (spelled exactly as in `CLASSES`:
+Sitting, Walking, Standing, Running) becomes the label; pass `label=` to
+override it.
+
+**The readings carry no time.** The `I (52310)` at the start of a line is
+when the line was printed, not when the reading was taken, so it's
+ignored. Times are worked out from the log number and a sample rate you
+must give (`rate_hz`, no default). That rate is an **assumption** until
+the firmware either stamps each reading or samples on a fixed timer, and
+every such recording says so in `meta["timestamps"]`.
+
+```python
+rec = recording.from_log_dump("Walking_20261110_01.txt", rate_hz=50)
+```
+
 ## Where numbers come from
 
 Every number the app shows -- the Dashboard's cards, bars and donut, the
@@ -686,7 +719,7 @@ heartwatchapp/
 │   └── worker.py        Qt-thread bridge (sends checked replies to the GUI)
 ├── ml/
 │   ├── spec.py          every pipeline number (10 Hz, 50-sample window, trim, normalization)
-│   ├── recording.py     capture logs / DB sessions -> Recording in g and deg/s
+│   ├── recording.py     capture logs / watch log dumps / DB sessions -> Recording in g and deg/s
 │   ├── preprocess.py    resample -> trim -> windows -> normalize (prepare())
 │   ├── inference.py     ActivityClassifier (LiteRT), metadata checks; CLASSES
 │   ├── check_model.py   LiteRT-vs-Keras parity and timing, app venv
@@ -715,7 +748,7 @@ heartwatchapp/
     ├── test_eval_ask.py       ask eval: real-DB refusal, scoring, rules-mode run
     ├── test_ai_bar.py         AI bar offscreen: answers, stale replies, timeout, preload
     ├── test_db_path.py        DB path defaults follow a patched db.DB_PATH; main window leaves the real DB alone
-    ├── test_ml_pipeline.py    activity model: spec, parser, resampling, windows, DB skew, guards, LiteRT parity
+    ├── test_ml_pipeline.py    activity model: spec, parsers (legacy + log dump), resampling, windows, DB skew, guards, LiteRT parity
     ├── test_recording.py      Start/Stop recording: nothing at launch, labels, windows, crash recovery, quit, theme
     └── test_sources.py        sources/base.py stays Qt- and asyncio-free; DummySource schedule and values
 ```

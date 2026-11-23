@@ -191,6 +191,181 @@ class LegacyParserTest(unittest.TestCase):
             recording.from_legacy_capture(path)
 
 
+def dump_line(n: int, c, hr: int = 54, prefix: bool = True) -> str:
+    """One reading in the firmware's log-dump layout (main.c:316-324)."""
+    body = (f"log{n}: ax: {c[0]}, ay: {c[1]}, az: {c[2]}, "
+            f"gx: {c[3]}, gy: {c[4]}, gz: {c[5]}, heartrate: {hr}")
+    return f"I ({52310 + n}) esp: {body}" if prefix else body
+
+
+class LogDumpParserTest(unittest.TestCase):
+    """from_log_dump(): the PSRAM log dump the watch prints after button 2."""
+
+    BOOT = [
+        "ESP-ROM:esp32s3-20210327",
+        "I (312) mpu: PSRAM detected: 8388608 bytes",
+        "I (842) mpu: WHO_AM_I: 0x71",
+        "",
+    ]
+    SCALES = np.array([spec.LEGACY_ACCEL_SCALE] * 3 + [spec.LEGACY_GYRO_SCALE] * 3)
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def write(self, name: str, lines: list[str]) -> Path:
+        path = self.dir / name
+        path.write_text("\n".join(lines) + "\n")
+        return path
+
+    def dump(self, name="Walking.txt", n=3, start=0, prefix=True) -> Path:
+        return self.write(name, self.BOOT + [
+            dump_line(start + i, [16384, -8192, 4096 * i, 131, -262, 0], 50 + i, prefix)
+            for i in range(n)
+        ])
+
+    def test_real_shaped_line_units_and_heart_rate(self):
+        rec = recording.from_log_dump(self.dump(), rate_hz=50)
+        self.assertEqual(rec.imu.shape, (3, 6))
+        # 16384 counts = 1 g, 131 counts = 1 deg/s (sensor defaults).
+        np.testing.assert_allclose(rec.imu[0], [1, -0.5, 0, 1, -2, 0], rtol=0, atol=1e-12)
+        np.testing.assert_allclose(rec.imu[2, 2], 0.5, rtol=0, atol=1e-12)
+        self.assertEqual(rec.meta["heartrate"].tolist(), [50, 51, 52])
+        self.assertEqual(rec.source, "log-dump")
+
+    def test_line_without_prefix(self):
+        rec = recording.from_log_dump(self.dump(prefix=False), rate_hz=50)
+        self.assertEqual(len(rec), 3)
+        np.testing.assert_allclose(rec.imu[0], [1, -0.5, 0, 1, -2, 0], rtol=0, atol=1e-12)
+
+    def test_flexible_whitespace(self):
+        path = self.write("Walking.txt", [
+            "I (1) esp: log0 :ax:1 ,ay : -2,az:  3,  gx:4,gy:5 , gz :6,heartrate:7  ",
+        ])
+        rec = recording.from_log_dump(path, rate_hz=10)
+        np.testing.assert_allclose(rec.imu[0] / self.SCALES, [1, -2, 3, 4, 5, 6], rtol=1e-12)
+        self.assertEqual(rec.meta["heartrate"].tolist(), [7])
+
+    def test_negative_values_stay_negative(self):
+        path = self.write("Walking.txt", [dump_line(0, [-16384, -1, -2, -131, -1, -2])])
+        rec = recording.from_log_dump(path, rate_hz=50)
+        self.assertTrue((rec.imu[0] < 0).all())
+        np.testing.assert_allclose(rec.imu[0, [0, 3]], [-1, -1], rtol=0, atol=1e-12)
+
+    def test_non_reading_lines_are_skipped_and_counted(self):
+        rec = recording.from_log_dump(self.dump(), rate_hz=50)
+        self.assertEqual(rec.meta["line_counts"],
+                         {"imu": 3, "blank": 1, "log": 2, "malformed": 0, "other": 1})
+
+    def test_no_reading_lines_raises(self):
+        path = self.write("Walking.txt", self.BOOT)
+        with self.assertRaisesRegex(ValueError, r"Walking\.txt.*no reading lines.*log<N>: ax:"):
+            recording.from_log_dump(path, rate_hz=50)
+
+    def test_skipped_log_number_raises_with_line_number(self):
+        path = self.write("Walking.txt", [dump_line(0, [0] * 6), dump_line(1, [0] * 6),
+                                          dump_line(3, [0] * 6)])
+        with self.assertRaisesRegex(ValueError, r"line 3\b.*expected log2, found log3"):
+            recording.from_log_dump(path, rate_hz=50)
+
+    def test_repeated_log_number_raises_with_line_number(self):
+        # The dump printed twice into one file: log0, log1, then log0 again.
+        path = self.write("Walking.txt", ["", dump_line(0, [0] * 6), dump_line(1, [0] * 6),
+                                          dump_line(0, [0] * 6)])
+        with self.assertRaisesRegex(ValueError, r"line 4\b.*expected log2, found log0.*twice"):
+            recording.from_log_dump(path, rate_hz=50)
+
+    def test_first_log_need_not_be_zero(self):
+        rec = recording.from_log_dump(self.dump(start=5), rate_hz=50)
+        self.assertEqual(rec.meta["first_log"], 5)
+        self.assertEqual(rec.ts_ms.tolist(), [0, 20, 40])
+
+    def test_timestamps_from_log_number_and_rate(self):
+        path = self.dump(n=60)
+        at50 = recording.from_log_dump(path, rate_hz=50)
+        self.assertEqual(at50.ts_ms.dtype, np.int64)
+        self.assertEqual(int(at50.ts_ms[50]), 1000)
+        at10 = recording.from_log_dump(path, rate_hz=10)
+        self.assertEqual(int(at10.ts_ms[10]), 1000)
+        self.assertTrue((np.diff(at10.ts_ms) > 0).all())
+
+    def test_bad_rate_raises(self):
+        path = self.dump()
+        for rate in (0, -10, float("nan")):
+            with self.subTest(rate=rate):
+                with self.assertRaisesRegex(ValueError, "rate_hz"):
+                    recording.from_log_dump(path, rate_hz=rate)
+
+    def test_labels(self):
+        self.assertEqual(recording.from_log_dump(self.dump("Sitting_20261110_03.txt"), 50).label,
+                         "Sitting")
+        self.assertEqual(recording.from_log_dump(self.dump("Walking.txt"), 50).label, "Walking")
+        self.assertEqual(
+            recording.from_log_dump(self.dump("Sitting_20261110_03.txt"), 50, label="Running").label,
+            "Running")
+        self.assertEqual(recording.from_log_dump(self.dump("dump.txt"), 50, label="Standing").label,
+                         "Standing")
+        with self.assertRaisesRegex(ValueError, "label"):
+            recording.from_log_dump(self.dump("dump_20261110_01.txt"), 50)
+        with self.assertRaises(ValueError):  # case must match, like the legacy parser
+            recording.from_log_dump(self.dump("sitting_20261110_01.txt"), 50)
+        with self.assertRaises(ValueError):
+            recording.from_log_dump(self.dump("dump.txt"), 50, label="Jogging")
+
+    def test_meta(self):
+        rec = recording.from_log_dump(self.dump("Sitting_20261110_03.txt"), rate_hz=50)
+        m = rec.meta
+        self.assertEqual(m["format"], "log-dump-v1")
+        self.assertIn("assumed", m["timestamps"])
+        self.assertEqual(m["timestamps"], "assumed fixed rate 50 Hz from log number")
+        self.assertEqual(m["rate_hz"], 50)
+        self.assertEqual((m["accel_scale"], m["gyro_scale"]),
+                         (spec.LEGACY_ACCEL_SCALE, spec.LEGACY_GYRO_SCALE))
+        self.assertEqual((m["first_log"], m["n_samples"]), (0, 3))
+        self.assertEqual(m["source_file"], "Sitting_20261110_03.txt")
+        self.assertEqual(len(m["sha256"]), 64)
+
+    def test_custom_scales_are_used_and_recorded(self):
+        rec = recording.from_log_dump(self.dump(), 50, accel_scale=1 / 8192, gyro_scale=1 / 65.5)
+        np.testing.assert_allclose(rec.imu[0, :2], [2, -1], rtol=0, atol=1e-12)
+        self.assertEqual(rec.meta["accel_scale"], 1 / 8192)
+        self.assertEqual(rec.meta["gyro_scale"], 1 / 65.5)
+
+    def test_renamed_field_is_not_parsed(self):
+        # A silent firmware change ("hr:" for "heartrate:") must fail loudly,
+        # not read the data some other way.
+        line = dump_line(0, [1, 2, 3, 4, 5, 6]).replace("heartrate:", "hr:")
+        path = self.write("Walking.txt", [line, line.replace("log0", "log1")])
+        with self.assertRaisesRegex(ValueError, "no reading lines"):
+            recording.from_log_dump(path, rate_hz=50)
+
+    def test_legacy_lines_are_not_log_dump_readings(self):
+        path = self.write("Walking.txt", [imu_line(1000, [1, 2, 3, 4, 5, 6])])
+        with self.assertRaisesRegex(ValueError, "no reading lines"):
+            recording.from_log_dump(path, rate_hz=50)
+
+    def test_end_to_end_through_prepare(self):
+        # 30 s at 50 Hz = 1500 readings, ts 0..29980 ms -> 300 bins of 5;
+        # trim 2 x 50 -> 200 samples; hop 25: starts 0..150 -> 7 windows;
+        # hop 50: starts 0, 50, 100, 150 -> 4 windows.
+        rng = random.Random(3)
+        lines = self.BOOT + [
+            dump_line(i, [rng.randint(-16000, 16000) for _ in range(3)]
+                      + [rng.randint(-3000, 3000) for _ in range(3)], 70)
+            for i in range(1500)
+        ]
+        rec = recording.from_log_dump(self.write("Running_20261110_01.txt", lines), rate_hz=50)
+        w = preprocess.prepare(rec, spec.TRAIN_HOP_SAMPLES)
+        self.assertEqual(w.X.shape, (7, 50, 6))
+        self.assertEqual((w.dropped, w.n_samples), (0, 200))
+        self.assertEqual(w.X.dtype, np.float32)
+        self.assertFalse(np.isnan(w.X).any())
+        self.assertEqual(len(preprocess.prepare(rec, spec.LIVE_HOP_SAMPLES).X), 4)
+
+
 @unittest.skipUnless((CAPTURE_DIR / "Standing.txt").is_file() and (CAPTURE_DIR / "Walking.txt").is_file(),
                      "captures not present in HeartWatch/test/")
 class RealCapturesTest(unittest.TestCase):
