@@ -228,6 +228,13 @@ static lv_obj_t *screen_bootup = NULL;
 static lv_obj_t *label_bootup = NULL;
 static lv_obj_t *img_heart_1 = NULL; 
 
+// Selection Screen, Allows user to choose what screen they want
+static lv_obj_t *screen_selection = NULL;
+static lv_obj_t *label_to_home = NULL;
+static lv_obj_t *label_to_active = NULL;
+static lv_obj_t *label_to_stopwatch = NULL;
+static lv_obj_t *label_to_transmission = NULL;
+
 // Home screen; displays time and date like regular clock
 static lv_obj_t *screen_home = NULL; 
 static lv_obj_t *label_battery = NULL;
@@ -248,6 +255,7 @@ static lv_obj_t *img_runner = NULL;
 // Transmission screen, indicates data is being transferred from watch
 static lv_obj_t *screen_transmission = NULL; 
 static lv_obj_t *label_transmission = NULL;
+static lv_obj_t *label_download = NULL;
 
 static void heart_timer_cb(lv_timer_t *timer) {
     if (screen_active == NULL || lv_scr_act() != screen_active) {
@@ -315,6 +323,37 @@ void setupScreens() {
     lv_obj_align(img_heart_1, LV_ALIGN_CENTER, 0, 0);
 
 
+    // Selection Screen
+    screen_selection = lv_obj_create(NULL);
+    lv_obj_set_style_bg_color(screen_selection, lv_color_hex(0x0D1117), 0);
+
+    label_to_home = lv_label_create(screen_selection);
+    lv_obj_set_style_text_font(label_to_home, &lv_font_montserrat_48, 0);
+    lv_label_set_text(label_to_home, LV_SYMBOL_HOME);
+    lv_obj_set_style_text_color(label_to_home, lv_color_hex(0x3FB950), 0);
+    lv_obj_align(label_to_home, LV_ALIGN_CENTER, 0, -85);
+
+    label_to_stopwatch = lv_label_create(screen_selection);
+    lv_obj_set_style_text_font(label_to_stopwatch, &lv_font_montserrat_30, 0);
+    lv_label_set_text(label_to_stopwatch, LV_SYMBOL_PLAY);
+    lv_obj_set_style_text_color(label_to_stopwatch, lv_color_hex(0xa89d9a), 0);
+    lv_obj_align(label_to_stopwatch, LV_ALIGN_CENTER, -85, 0);
+
+    label_to_active = lv_label_create(screen_selection);
+    lv_obj_set_style_text_font(label_to_active, &lv_font_montserrat_30, 0);
+    lv_label_set_text(label_to_active, LV_SYMBOL_LOOP);
+    lv_obj_set_style_text_color(label_to_active, lv_color_hex(0xa89d9a), 0);
+    lv_obj_align(label_to_active, LV_ALIGN_CENTER, 85, 0);
+
+    label_to_transmission = lv_label_create(screen_selection);
+    lv_obj_set_style_text_font(label_to_transmission, &lv_font_montserrat_30, 0);
+    lv_label_set_text(label_to_transmission, LV_SYMBOL_DRIVE);
+    lv_obj_set_style_text_color(label_to_transmission, lv_color_hex(0xa89d9a), 0);
+    lv_obj_align(label_to_transmission, LV_ALIGN_CENTER, 0, 85);
+
+
+
+
 
     // Home Screen
     screen_home = lv_obj_create(NULL);
@@ -341,13 +380,18 @@ void setupScreens() {
     lv_obj_align(label_time, LV_ALIGN_CENTER, 0, 0);
 
 
+
     // Stopwatch Screen
     screen_stopwatch = lv_obj_create(NULL);
     lv_obj_set_style_bg_color(screen_stopwatch, lv_color_hex(0x0D1117), 0);
 
     label_stopwatch = lv_label_create(screen_stopwatch);
-    lv_label_set_text(label_stopwatch, "Heartwatch\nHome Screen");
-    lv_obj_align(label_stopwatch, LV_ALIGN_CENTER, 0, 0   );
+    lv_obj_set_style_text_font(label_stopwatch, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_color(label_stopwatch, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_text_letter_space(label_date, 2, 0);
+    lv_label_set_text(label_stopwatch, "Stopwatch Screen");
+    lv_obj_align(label_stopwatch, LV_ALIGN_CENTER, 0, -60);
+
 
 
     // Active Screen
@@ -385,10 +429,19 @@ void setupScreens() {
 
     // Data Transmission Screen
     screen_transmission = lv_obj_create(NULL);
+    lv_obj_set_style_bg_color(screen_transmission, lv_color_hex(0x0D1117), 0);
 
     label_transmission = lv_label_create(screen_transmission);
     lv_label_set_text(label_transmission, "Heartwatch\nTransmitting Data...");
+    lv_obj_set_style_text_font(label_transmission, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_color(label_transmission, lv_color_hex(0xFFFFFF), 0);
     lv_obj_align(label_transmission, LV_ALIGN_CENTER, 0, -60);
+    
+    label_download = lv_label_create(screen_transmission);
+    lv_obj_set_style_text_font(label_download, &lv_font_montserrat_48, 0);
+    lv_label_set_text(label_download, LV_SYMBOL_DOWNLOAD);
+    lv_obj_set_style_text_color(label_download, lv_color_hex(0x3FB950), 0);
+    lv_obj_align(label_download, LV_ALIGN_CENTER, 0, 60);
 
 
     //lv_obj_t *intro_label = lv_label_create(screen_bootup);
@@ -398,6 +451,10 @@ void setupScreens() {
 
 void displayBootup() {
     lv_scr_load(screen_bootup);
+}
+
+void displaySelection() {
+    lv_scr_load(screen_selection);
 }
 
 void displayHome() {
@@ -466,6 +523,46 @@ void updateHomeScreen(const struct tm *timeinfo, uint8_t battery_pct) {
 
 
 
+void updateSelectionScreen(watch_screen_t current_screen) {
+    if (lv_scr_act() != screen_selection) {
+        return;
+    }
+
+    switch (current_screen) {
+        case SCREEN_HOME:
+            lv_obj_set_style_text_font(label_to_home, &lv_font_montserrat_48, 0);
+            lv_label_set_text(label_to_home, LV_SYMBOL_HOME);
+            lv_obj_set_style_text_color(label_to_home, lv_color_hex(0x3FB950), 0);
+            lv_obj_align(label_to_home, LV_ALIGN_CENTER, 0, -80);
+
+            lv_obj_set_style_text_font(label_to_stopwatch, &lv_font_montserrat_36, 0);
+            lv_label_set_text(label_to_stopwatch, LV_SYMBOL_PLAY);
+            lv_obj_set_style_text_color(label_to_stopwatch, lv_color_hex(0xa89d9a), 0);
+            lv_obj_align(label_to_stopwatch, LV_ALIGN_CENTER, -80, 0);
+
+            lv_obj_set_style_text_font(label_to_active, &lv_font_montserrat_36, 0);
+            lv_label_set_text(label_to_active, LV_SYMBOL_LOOP);
+            lv_obj_set_style_text_color(label_to_active, lv_color_hex(0xa89d9a), 0);
+            lv_obj_align(label_to_active, LV_ALIGN_CENTER, 80, 0);
+
+            lv_obj_set_style_text_font(label_to_transmission, &lv_font_montserrat_36, 0);
+            lv_label_set_text(label_to_transmission, LV_SYMBOL_DRIVE);
+            lv_obj_set_style_text_color(label_to_transmission, lv_color_hex(0xa89d9a), 0);
+            lv_obj_align(label_to_transmission, LV_ALIGN_CENTER, 0, 80);
+            break;
+        case SCREEN_STOPWATCH:
+            break;
+        case SCREEN_ACTIVE:
+            break;
+        case SCREEN_TRANSMISSION:
+            break;
+        default:
+            break;
+    }
+}
+
+
+
 void updateActiveScreen(uint16_t bpm, bool is_moving) {
     current_bpm    = bpm;
     user_is_moving = is_moving;
@@ -490,40 +587,3 @@ void updateActiveScreen(uint16_t bpm, bool is_moving) {
         lv_obj_set_style_text_color(label_status, lv_color_hex(0x8B949E), 0);
     }
 }
-
-
-
-
-
-
-// SH1107 Screen Options
-// void displayHUD(int selection) {
-//     // Clear the screen ONCE instead of fighting 15 individual prints
-//     ESP_ERROR_CHECK(sh1107_clear());
-//     ESP_ERROR_CHECK(sh1107_set_cursor(0, 0));
-
-//     switch (selection) {
-//         case 0: // Bootup Screen
-//             ESP_ERROR_CHECK(sh1107_print("****************\n*  Welcome to  *\n*  Heartwatch  *\n*    Carson    *\n*    Zach      *\n*    Bobby     *\n*    Dylan     *\n****************\n"));
-//         break;
-
-//         case 1: // Time Telling Screen
-//             ESP_ERROR_CHECK(sh1107_print("****************\n* Time Display *\n*              *\n*              *\n****************\n"));
-//         break;
-
-//         case 2: // Activity Screen
-//             ESP_ERROR_CHECK(sh1107_print("****************\n*  Heart Rate  *\n*              *\n*              *\n****************\n"));
-//         break;
-
-//         case 3: // Motion Sensing with IMU
-//             ESP_ERROR_CHECK(sh1107_print("****************\n*    Motion    *\n*              *\n*              *\n****************\n"));
-//         break;
-
-//         case 4: // Screen Off
-//             ESP_ERROR_CHECK(sh1107_print(""));
-//         break;
-
-//         default:
-//             ESP_ERROR_CHECK(sh1107_print("****************\n*    Ready     *\n****************\n"));
-//     }
-// }

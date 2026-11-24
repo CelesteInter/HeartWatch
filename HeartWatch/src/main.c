@@ -277,8 +277,14 @@ void load_screen(watch_screen_t target) {
         case SCREEN_BOOTUP:
             displayBootup();
             break;
+        case SCREEN_SELECTION:
+            displaySelection();
+            break;
         case SCREEN_HOME:
             displayHome();
+            break;
+        case SCREEN_STOPWATCH:
+            displayStopwatch();
             break;
         case SCREEN_ACTIVE:
             displayActive();
@@ -287,8 +293,8 @@ void load_screen(watch_screen_t target) {
             displayTransmission();
             break;
         default:
-            currentDisplay = SCREEN_HOME;
-            displayHome();
+            currentDisplay = SCREEN_SELECTION;
+            displaySelection();
             break;
     }
 }
@@ -297,7 +303,15 @@ void load_screen(watch_screen_t target) {
 static watch_screen_t next_runtime_screen(watch_screen_t current) {
     watch_screen_t next = (watch_screen_t)((current + 1) % SCREEN_COUNT);
     if (next == SCREEN_BOOTUP) {
-        next = SCREEN_HOME; // Skip bootup logo during normal watch navigation
+        next = SCREEN_SELECTION; // Skip bootup logo during normal watch navigation
+    }
+    return next;
+}
+
+static watch_screen_t selector_screen_control(watch_screen_t current) {
+    watch_screen_t next = (watch_screen_t)((current + 1) % SCREEN_COUNT);
+    if (next == SCREEN_BOOTUP) {
+        next = SCREEN_SELECTION; // Skip bootup logo during normal watch navigation
     }
     return next;
 }
@@ -329,7 +343,7 @@ static uint8_t get_estimated_battery_pct(void) {
     return (uint8_t)percent;
 }
 
-
+// Detects IMU Movement
 static bool detect_imu_movement(float ax_g, float ay_g, float az_g) {
     static int64_t last_motion_us = 0;
     float mag = sqrtf(ax_g * ax_g + ay_g * ay_g + az_g * az_g);
@@ -339,86 +353,6 @@ static bool detect_imu_movement(float ax_g, float ay_g, float az_g) {
     }
     return (esp_timer_get_time() - last_motion_us) < 1200000;
 }
-
-// Detects movement when accelerometer deviates from 1.0g
-// static bool detect_imu_movement(float ax_g, float ay_g, float az_g) {
-//    static float baseline_mag = 0.0f;
-//     static uint8_t motion_hits = 0;
-//     static int64_t last_motion_us = 0;
-
-//     float mag = sqrtf(ax_g * ax_g + ay_g * ay_g + az_g * az_g);
-
-//     // Initialize baseline to the sensor's actual resting magnitude on the first read
-//     if (baseline_mag == 0.0f) {
-//         baseline_mag = mag;
-//     }
-
-//     // Slowly track resting gravity (filters out static DC offset)
-//     baseline_mag = 0.85f * baseline_mag + 0.15f * mag;
-
-//     // Isolate dynamic acceleration from gravity + bias
-//     float dynamic_g = fabsf(mag - baseline_mag);
-
-//     // Require 3 consecutive samples (~30ms at 100Hz) above threshold to ignore single spikes
-//     if (dynamic_g > 0.08f) {
-//         if (motion_hits < 3) {
-//             motion_hits++;
-//         }
-//         if (motion_hits >= 3) {
-//             last_motion_us = esp_timer_get_time();
-//         }
-//     } else {
-//         motion_hits = 0;
-//     }
-
-//     // Hold ACTIVE state for 800ms after real movement stops so the runner doesn't stutter
-//     return (last_motion_us > 0) && ((esp_timer_get_time() - last_motion_us) < 800000);
-// }
-
-
-
-// Tags
-//static const char *TAG = "mpu";
-//static const char *HEART_RATE_TAG = "heartrate";
-//static const char *MAIN = "esp";
-
-// Button Setup (Polling Style)
-// int button1State = 1;
-// int lastButton1State = 1;
-// uint32_t lastDebounceTime1 = 0;
-// int button2State = 1;
-// int lastButton2State = 1;
-// uint32_t lastDebounceTime2 = 0;
-
-
-
-
-
-// // Variables to hold MAX30101 values
-// uint32_t ir_value;
-// uint32_t ir_baseline = 0;
-// uint32_t signal_peak = 0;
-// int64_t last_beat_ms = 0;
-// uint16_t stable_bpm = 0;
-
-
-
-// Logging
-// struct log {
-//     int16_t ax; // 16
-//     int16_t ay; // 32
-//     int16_t az; // 48
-//     int16_t gx; // 64
-//     int16_t gy; // 80
-//     int16_t gz; // 96
-//     uint8_t heartrate; // 104
-//     // pad 8 bits = 112 bits or 14 bytes
-// };
-// #define LOG_CAPACITY 500000
-// struct log *log_buffer;
-// // Include a pointer to point to the current log
-// uint32_t log_pointer = 0;
-
 
 
 // Main application loop
@@ -431,25 +365,6 @@ void app_main(void) {
     setupScreens();
     vTaskDelay(pdMS_TO_TICKS(1500));
     displayBootup();
-
-    //ESP_ERROR_CHECK(esp_lcd_panel_disp_sleep(panel_handle, true));
-
-
-
-    // Configurations
-
-    // ESP_LOGI(TAG, "PSRAM detected: %zu bytes", esp_psram_get_size());
-    // log_buffer = heap_caps_calloc(LOG_CAPACITY, sizeof(*log_buffer), MALLOC_CAP_SPIRAM);
-    // ESP_ERROR_CHECK(log_buffer != NULL ? ESP_OK : ESP_ERR_NO_MEM);
-
-    // Button Config
-    // gpio_reset_pin(BUTTON_1_PIN);
-    // gpio_set_direction(BUTTON_1_PIN, GPIO_MODE_INPUT);
-    // gpio_set_pull_mode(BUTTON_1_PIN, GPIO_PULLUP_ONLY);
-
-    // gpio_reset_pin(BUTTON_2_PIN);
-    // gpio_set_direction(BUTTON_2_PIN, GPIO_MODE_INPUT);
-    // gpio_set_pull_mode(BUTTON_2_PIN, GPIO_PULLUP_ONLY);
 
     // const uint32_t debounceDelay = 10; // 50ms delay
     

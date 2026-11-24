@@ -8,10 +8,12 @@
 
 typedef enum {
     SCREEN_BOOTUP = 0,
-    SCREEN_HOME = 1,
-    SCREEN_ACTIVE = 2,
-    SCREEN_TRANSMISSION = 3,
-    SCREEN_COUNT
+    SCREEN_SELECTION = 1,
+    SCREEN_HOME = 2,
+    SCREEN_STOPWATCH = 3,
+    SCREEN_ACTIVE = 4,
+    SCREEN_TRANSMISSION = 5,
+    SCREEN_COUNT = 6
 } watch_screen_t;
 
 /**
@@ -20,6 +22,8 @@ typedef enum {
 void setupScreens();
 
 void displayBootup();
+
+void displaySelection();
 
 void displayHome();
 
