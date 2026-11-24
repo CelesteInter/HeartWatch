@@ -668,6 +668,23 @@ rec = recording.from_log_dump("Walking_20261110_01.txt", rate_hz=50,
                               accel_range_g=2, gyro_range_dps=250)
 ```
 
+### Getting the activity model and running it on a log
+
+The model file isn't stored in git, so you make it yourself once. The export script checks the model on recordings it never saw. It saves the model only if it does at least about as well as a simple "is the wrist moving?" rule. Then `predict_capture` tells you, for any recorded log, when the wearer was **Still** and when they were **Walking**. Sitting and Standing both count as Still. Running isn't recognised.
+
+1. **Export the model** (training environment, from the repo root, about a minute):
+   ```
+   heartwatchapp/ml/training/.venv/bin/python -B -m heartwatchapp.ml.training.train_v2_magnitude
+   ```
+   It prints PASS or FAIL. On PASS the model goes to `heartwatchapp/ml/models/` and the previous one is kept in `ml/models/archive/`. On FAIL nothing is changed. Either way a report is written to `heartwatchapp/ml/runs/<time>-v2/report.md`. Add `--folds-only` to see what it would test without training anything.
+2. **Run it on a log** (app environment). You must give the sensor ranges the log was recorded at. For every capture so far that's ±2 g and ±250 °/s:
+   ```
+   heartwatchapp/.venv/bin/python -B -m heartwatchapp.ml.tools.predict_capture path/to/log.txt --accel-range-g 2 --gyro-range-dps 250
+   ```
+   You get each 5-second window's guess, then a summary like `Still 0:05–1:20`, `Walking 1:20–3:00`, with times measured from the start of the log. Use `--manifest` instead of a file to run every capture in `ml/captures.csv` and see ✓/✗ against its label. An empty, unreadable or too-short log prints a one-line error.
+
+Limits: only Still vs Walking, only the old ESP-IDF log format, and so far it is no better than the simple motion rule.
+
 ## Where numbers come from
 
 Every number the app shows -- the Dashboard's cards, bars and donut, the
