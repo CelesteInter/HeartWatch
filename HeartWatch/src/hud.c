@@ -12,10 +12,221 @@
 #include "lvgl.h"
 #include "hud.h"
 
+// ============================================================================
+// 32x32 1-Bit Pixel Art Bitmaps (128 bytes each, MSB = left pixel)
+// ============================================================================
+
+
+static const uint8_t heart_large_data[128] = {
+    0b00000000, 0b00000000, 0b00000000, 0b00000000,
+    0b00000000, 0b00000000, 0b00000000, 0b00000000,
+    0b00000000, 0b00000000, 0b00000000, 0b00000000,
+    0b00000111, 0b11000000, 0b00000011, 0b11100000,
+    0b00001111, 0b11100000, 0b00000111, 0b11110000,
+    0b00011111, 0b11110000, 0b00001111, 0b11111000,
+    0b00111111, 0b11111000, 0b00011111, 0b11111100,
+    0b01111111, 0b11111100, 0b00111111, 0b11111110,
+    0b01111111, 0b11111110, 0b01111111, 0b11111110,
+    0b11111111, 0b11111111, 0b11111111, 0b11111111,
+    0b11111111, 0b11111111, 0b11111111, 0b11111111,
+    0b11111111, 0b11111111, 0b11111111, 0b11111111,
+    0b11111111, 0b11111111, 0b11111111, 0b11111111,
+    0b11111111, 0b11111111, 0b11111111, 0b11111111,
+    0b01111111, 0b11111111, 0b11111111, 0b11111110,
+    0b01111111, 0b11111111, 0b11111111, 0b11111110,
+    0b00111111, 0b11111111, 0b11111111, 0b11111100,
+    0b00111111, 0b11111111, 0b11111111, 0b11111100,
+    0b00011111, 0b11111111, 0b11111111, 0b11111000,
+    0b00001111, 0b11111111, 0b11111111, 0b11110000,
+    0b00000111, 0b11111111, 0b11111111, 0b11100000,
+    0b00000011, 0b11111111, 0b11111111, 0b11000000,
+    0b00000001, 0b11111111, 0b11111111, 0b10000000,
+    0b00000000, 0b11111111, 0b11111111, 0b00000000,
+    0b00000000, 0b01111111, 0b11111110, 0b00000000,
+    0b00000000, 0b00111111, 0b11111100, 0b00000000,
+    0b00000000, 0b00011111, 0b11111000, 0b00000000,
+    0b00000000, 0b00001111, 0b11110000, 0b00000000,
+    0b00000000, 0b00000111, 0b11100000, 0b00000000,
+    0b00000000, 0b00000011, 0b11000000, 0b00000000,
+    0b00000000, 0b00000001, 0b10000000, 0b00000000,
+    0b00000000, 0b00000000, 0b00000000, 0b00000000,
+};
+
+static const uint8_t heart_small_data[128] = {
+    0b00000000, 0b00000000, 0b00000000, 0b00000000,
+    0b00000000, 0b00000000, 0b00000000, 0b00000000,
+    0b00000000, 0b00000000, 0b00000000, 0b00000000,
+    0b00000000, 0b00000000, 0b00000000, 0b00000000,
+    0b00000000, 0b00000000, 0b00000000, 0b00000000,
+    0b00000000, 0b00000000, 0b00000000, 0b00000000,
+    0b00000000, 0b00000000, 0b00000000, 0b00000000,
+    0b00000001, 0b11100000, 0b00000111, 0b10000000,
+    0b00000011, 0b11110000, 0b00001111, 0b11000000,
+    0b00000111, 0b11111000, 0b00011111, 0b11100000,
+    0b00001111, 0b11111100, 0b00111111, 0b11110000,
+    0b00001111, 0b11111110, 0b01111111, 0b11110000,
+    0b00001111, 0b11111111, 0b11111111, 0b11110000,
+    0b00001111, 0b11111111, 0b11111111, 0b11110000,
+    0b00001111, 0b11111111, 0b11111111, 0b11110000,
+    0b00000111, 0b11111111, 0b11111111, 0b11100000,
+    0b00000111, 0b11111111, 0b11111111, 0b11100000,
+    0b00000011, 0b11111111, 0b11111111, 0b11000000,
+    0b00000001, 0b11111111, 0b11111111, 0b10000000,
+    0b00000000, 0b11111111, 0b11111111, 0b00000000,
+    0b00000000, 0b01111111, 0b11111110, 0b00000000,
+    0b00000000, 0b00111111, 0b11111100, 0b00000000,
+    0b00000000, 0b00011111, 0b11111000, 0b00000000,
+    0b00000000, 0b00001111, 0b11110000, 0b00000000,
+    0b00000000, 0b00000111, 0b11100000, 0b00000000,
+    0b00000000, 0b00000011, 0b11000000, 0b00000000,
+    0b00000000, 0b00000001, 0b10000000, 0b00000000,
+    0b00000000, 0b00000000, 0b00000000, 0b00000000,
+    0b00000000, 0b00000000, 0b00000000, 0b00000000,
+    0b00000000, 0b00000000, 0b00000000, 0b00000000,
+    0b00000000, 0b00000000, 0b00000000, 0b00000000,
+    0b00000000, 0b00000000, 0b00000000, 0b00000000,
+};
+
+// Frame 0: Full stride
+static const uint8_t runner_f0_data[128] = {
+    0b00000000, 0b00000000, 0b00000000, 0b00000000,
+    0b00000000, 0b00000000, 0b00000000, 0b00000000,
+    0b00000000, 0b00011110, 0b00000000, 0b00000000,
+    0b00000000, 0b00111111, 0b00000000, 0b00000000,
+    0b00000000, 0b00111111, 0b00000000, 0b00000000,
+    0b00000000, 0b00011110, 0b00000000, 0b00000000,
+    0b00000000, 0b00001100, 0b00000000, 0b00000000,
+    0b00000000, 0b00011110, 0b00000000, 0b00000000,
+    0b00000000, 0b01111111, 0b11000000, 0b00000000,
+    0b00000001, 0b11001100, 0b01100000, 0b00000000,
+    0b00000011, 0b00001100, 0b00110000, 0b00000000,
+    0b00000110, 0b00001100, 0b00110000, 0b00000000,
+    0b00000000, 0b00001100, 0b00000000, 0b00000000,
+    0b00000000, 0b00001100, 0b00000000, 0b00000000,
+    0b00000000, 0b00001100, 0b00000000, 0b00000000,
+    0b00000000, 0b00001100, 0b00000000, 0b00000000,
+    0b00000000, 0b00011110, 0b00000000, 0b00000000,
+    0b00000000, 0b00110011, 0b00000000, 0b00000000,
+    0b00000000, 0b01100001, 0b10000000, 0b00000000,
+    0b00000000, 0b11000000, 0b11000000, 0b00000000,
+    0b00000001, 0b10000000, 0b01100000, 0b00000000,
+    0b00000011, 0b00000000, 0b01100000, 0b00000000,
+    0b00000110, 0b00000000, 0b00110000, 0b00000000,
+    0b00001100, 0b00000000, 0b00110000, 0b00000000,
+    0b00011000, 0b00000000, 0b00011000, 0b00000000,
+    0b00011100, 0b00000000, 0b00011110, 0b00000000,
+    0b00000000, 0b00000000, 0b00000000, 0b00000000,
+    0b00000000, 0b00000000, 0b00000000, 0b00000000,
+    0b00000000, 0b00000000, 0b00000000, 0b00000000,
+    0b00000000, 0b00000000, 0b00000000, 0b00000000,
+    0b00000000, 0b00000000, 0b00000000, 0b00000000,
+    0b00000000, 0b00000000, 0b00000000, 0b00000000,
+};
+
+// Frame 1: Passing / idle stance
+static const uint8_t runner_f1_data[128] = {
+    0b00000000, 0b00000000, 0b00000000, 0b00000000,
+    0b00000000, 0b00000000, 0b00000000, 0b00000000,
+    0b00000000, 0b00011110, 0b00000000, 0b00000000,
+    0b00000000, 0b00111111, 0b00000000, 0b00000000,
+    0b00000000, 0b00111111, 0b00000000, 0b00000000,
+    0b00000000, 0b00011110, 0b00000000, 0b00000000,
+    0b00000000, 0b00001100, 0b00000000, 0b00000000,
+    0b00000000, 0b00111111, 0b00000000, 0b00000000,
+    0b00000000, 0b01101101, 0b10000000, 0b00000000,
+    0b00000000, 0b01101101, 0b10000000, 0b00000000,
+    0b00000000, 0b01101101, 0b10000000, 0b00000000,
+    0b00000000, 0b01101101, 0b10000000, 0b00000000,
+    0b00000000, 0b00001100, 0b00000000, 0b00000000,
+    0b00000000, 0b00001100, 0b00000000, 0b00000000,
+    0b00000000, 0b00001100, 0b00000000, 0b00000000,
+    0b00000000, 0b00001100, 0b00000000, 0b00000000,
+    0b00000000, 0b00011110, 0b00000000, 0b00000000,
+    0b00000000, 0b00011011, 0b00000000, 0b00000000,
+    0b00000000, 0b00011011, 0b00000000, 0b00000000,
+    0b00000000, 0b00011011, 0b00000000, 0b00000000,
+    0b00000000, 0b00011011, 0b00000000, 0b00000000,
+    0b00000000, 0b00011011, 0b00000000, 0b00000000,
+    0b00000000, 0b00011011, 0b00000000, 0b00000000,
+    0b00000000, 0b00011011, 0b00000000, 0b00000000,
+    0b00000000, 0b00011011, 0b00000000, 0b00000000,
+    0b00000000, 0b00011111, 0b10000000, 0b00000000,
+    0b00000000, 0b00000000, 0b00000000, 0b00000000,
+    0b00000000, 0b00000000, 0b00000000, 0b00000000,
+    0b00000000, 0b00000000, 0b00000000, 0b00000000,
+    0b00000000, 0b00000000, 0b00000000, 0b00000000,
+    0b00000000, 0b00000000, 0b00000000, 0b00000000,
+    0b00000000, 0b00000000, 0b00000000, 0b00000000,
+};
+
+// Frame 2: Knee drive
+static const uint8_t runner_f2_data[128] = {
+    0b00000000, 0b00000000, 0b00000000, 0b00000000,
+    0b00000000, 0b00000000, 0b00000000, 0b00000000,
+    0b00000000, 0b00011110, 0b00000000, 0b00000000,
+    0b00000000, 0b00111111, 0b00000000, 0b00000000,
+    0b00000000, 0b00111111, 0b00000000, 0b00000000,
+    0b00000000, 0b00011110, 0b00000000, 0b00000000,
+    0b00000000, 0b00001100, 0b00000000, 0b00000000,
+    0b00000000, 0b00011110, 0b00000000, 0b00000000,
+    0b00000000, 0b00111111, 0b10000000, 0b00000000,
+    0b00000000, 0b01101100, 0b11000000, 0b00000000,
+    0b00000000, 0b11001100, 0b11000000, 0b00000000,
+    0b00000000, 0b11001100, 0b00000000, 0b00000000,
+    0b00000000, 0b00001100, 0b00000000, 0b00000000,
+    0b00000000, 0b00001100, 0b00000000, 0b00000000,
+    0b00000000, 0b00001100, 0b00000000, 0b00000000,
+    0b00000000, 0b00001100, 0b00000000, 0b00000000,
+    0b00000000, 0b00011110, 0b00000000, 0b00000000,
+    0b00000000, 0b00110111, 0b00000000, 0b00000000,
+    0b00000000, 0b01100011, 0b00000000, 0b00000000,
+    0b00000000, 0b11000011, 0b00000000, 0b00000000,
+    0b00000001, 0b10000110, 0b00000000, 0b00000000,
+    0b00000001, 0b10001100, 0b00000000, 0b00000000,
+    0b00000000, 0b00001100, 0b00000000, 0b00000000,
+    0b00000000, 0b00011000, 0b00000000, 0b00000000,
+    0b00000000, 0b00011100, 0b00000000, 0b00000000,
+    0b00000000, 0b00000000, 0b00000000, 0b00000000,
+    0b00000000, 0b00000000, 0b00000000, 0b00000000,
+    0b00000000, 0b00000000, 0b00000000, 0b00000000,
+    0b00000000, 0b00000000, 0b00000000, 0b00000000,
+    0b00000000, 0b00000000, 0b00000000, 0b00000000,
+    0b00000000, 0b00000000, 0b00000000, 0b00000000,
+    0b00000000, 0b00000000, 0b00000000, 0b00000000,
+};
+
+#define MAKE_PIXEL_SPRITE(arr) { \
+    .header.cf = LV_IMG_CF_ALPHA_1BIT, \
+    .header.always_zero = 0, \
+    .header.reserved = 0, \
+    .header.w = 32, \
+    .header.h = 32, \
+    .data_size = 128, \
+    .data = (arr), \
+}
+
+static const lv_img_dsc_t img_heart_large = MAKE_PIXEL_SPRITE(heart_large_data);
+static const lv_img_dsc_t img_heart_small = MAKE_PIXEL_SPRITE(heart_small_data);
+static const lv_img_dsc_t img_runner_f0   = MAKE_PIXEL_SPRITE(runner_f0_data);
+static const lv_img_dsc_t img_runner_f1   = MAKE_PIXEL_SPRITE(runner_f1_data);
+static const lv_img_dsc_t img_runner_f2   = MAKE_PIXEL_SPRITE(runner_f2_data);
+
+static const lv_img_dsc_t *runner_frames[4] = {
+    &img_runner_f0,
+    &img_runner_f1,
+    &img_runner_f2,
+    &img_runner_f1
+};
+
+static uint16_t current_bpm       = 0;
+static bool     user_is_moving    = false;
+static bool     heart_expanded    = false;
+static uint8_t  runner_step       = 0;
+
 // Bootup screen, only happens when powering on the watch
 static lv_obj_t *screen_bootup = NULL; 
 static lv_obj_t *label_bootup = NULL;
-static lv_obj_t *led_bootup = NULL;
+static lv_obj_t *img_heart_1 = NULL; 
 
 // Home screen; displays time and date like regular clock
 static lv_obj_t *screen_home = NULL; 
@@ -29,13 +240,59 @@ static lv_obj_t *label_stopwatch = NULL;
 
 // Active screen, displays HR, active step count, and movement indicator
 static lv_obj_t *screen_active = NULL; 
-static lv_obj_t *label_active = NULL;
-static lv_obj_t *label_accel = NULL;
-static lv_obj_t *label_gyro = NULL;
+static lv_obj_t *label_bpm = NULL;
+static lv_obj_t *label_status = NULL;
+static lv_obj_t *img_heart = NULL; 
+static lv_obj_t *img_runner = NULL;
 
 // Transmission screen, indicates data is being transferred from watch
 static lv_obj_t *screen_transmission = NULL; 
 static lv_obj_t *label_transmission = NULL;
+
+static void heart_timer_cb(lv_timer_t *timer) {
+    if (screen_active == NULL || lv_scr_act() != screen_active) {
+        return;
+    }
+
+    if (current_bpm == 0) {
+        heart_expanded = false;
+        lv_img_set_src(img_heart, &img_heart_small);
+        lv_timer_set_period(timer, 500);
+        return;
+    }
+
+    uint32_t beat_period_ms = 60000 / current_bpm;
+    if (beat_period_ms < 250) {
+        beat_period_ms = 250; // Clamp at 240 BPM max
+    }
+
+    if (!heart_expanded) {
+        heart_expanded = true;
+        lv_img_set_src(img_heart, &img_heart_large);
+        lv_timer_set_period(timer, 150); // Quick systolic beat
+    } else {
+        heart_expanded = false;
+        lv_img_set_src(img_heart, &img_heart_small);
+        lv_timer_set_period(timer, beat_period_ms - 150);
+    }
+}
+
+static void runner_timer_cb(lv_timer_t *timer) {
+    if (screen_active == NULL || lv_scr_act() != screen_active) {
+        return;
+    }
+
+    if (!user_is_moving) {
+        runner_step = 1;
+        lv_img_set_src(img_runner, &img_runner_f1);
+        return;
+    }
+
+    runner_step = (runner_step + 1) % 4;
+    lv_img_set_src(img_runner, runner_frames[runner_step]);
+}
+
+
 
 
 // Initializes LVGL Screens
@@ -43,15 +300,20 @@ void setupScreens() {
 
     // Bootup Screen
     screen_bootup = lv_obj_create(NULL);
+    lv_obj_set_style_bg_color(screen_bootup, lv_color_hex(0x0D1117), 0);
   
     label_bootup = lv_label_create(screen_bootup);
-    lv_label_set_text(label_bootup, "Heartwatch\nBootup Screen!\n");
-    lv_obj_align(label_bootup, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_set_style_text_font(label_bootup, &lv_font_montserrat_16, 0);
+    lv_obj_align(label_bootup, LV_ALIGN_CENTER, 0, 80);
+    lv_obj_set_style_text_color(label_bootup, lv_color_hex(0xFFFFFF), 0);
+    lv_label_set_text(label_bootup, "Heartwatch Initializing");
 
-    led_bootup = lv_led_create(screen_bootup);
-    lv_led_set_color(led_bootup, lv_color_hex(0xff0080));
-    lv_led_set_brightness(led_bootup, 255);
-    lv_obj_align(led_bootup, LV_ALIGN_CENTER, 40, 40);
+    img_heart_1 = lv_img_create(screen_bootup);
+    lv_img_set_src(img_heart_1, &img_heart_large);
+    lv_obj_set_style_img_recolor(img_heart_1, lv_color_hex(0xFF2E4C), 0);
+    lv_obj_set_style_img_recolor_opa(img_heart_1, LV_OPA_COVER, 0);
+    lv_obj_align(img_heart_1, LV_ALIGN_CENTER, 0, 0);
+
 
 
     // Home Screen
@@ -81,26 +343,45 @@ void setupScreens() {
 
     // Stopwatch Screen
     screen_stopwatch = lv_obj_create(NULL);
+    lv_obj_set_style_bg_color(screen_stopwatch, lv_color_hex(0x0D1117), 0);
 
     label_stopwatch = lv_label_create(screen_stopwatch);
     lv_label_set_text(label_stopwatch, "Heartwatch\nHome Screen");
     lv_obj_align(label_stopwatch, LV_ALIGN_CENTER, 0, 0   );
 
+
     // Active Screen
     screen_active = lv_obj_create(NULL);
+    lv_obj_set_style_bg_color(screen_active, lv_color_hex(0x0D1117), 0);
 
-    label_active = lv_label_create(screen_active);
-    lv_label_set_text(label_active, "Heartwatch\nActive Screen");
-    lv_obj_align(label_active, LV_ALIGN_CENTER, 0, -60);
+    img_heart = lv_img_create(screen_active);
+    lv_img_set_src(img_heart, &img_heart_small);
+    lv_obj_set_style_img_recolor(img_heart, lv_color_hex(0xFF2E4C), 0);
+    lv_obj_set_style_img_recolor_opa(img_heart, LV_OPA_COVER, 0);
+    lv_obj_align(img_heart, LV_ALIGN_CENTER, -70, -30);
 
-    label_accel = lv_label_create(screen_active);
-    lv_label_set_text(label_accel, "Accel (g):\nX: 0.0  Y: 0.0  Z: 0.0");
-    lv_obj_align(label_accel, LV_ALIGN_CENTER, 0, -20);
+    label_bpm = lv_label_create(screen_active);
+    lv_label_set_text(label_bpm, "-- BPM");
+    lv_obj_set_style_text_font(label_bpm, &lv_font_montserrat_36, 0);
+    lv_obj_set_style_text_color(label_bpm, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_align(label_bpm, LV_ALIGN_CENTER, 28, -30);
 
-    label_gyro = lv_label_create(screen_active);
-    lv_label_set_text(label_gyro, "Gyro (dps):\nX: 0.0  Y: 0.0  Z: 0.0");
-    lv_obj_align(label_gyro, LV_ALIGN_CENTER, 0, 35);
+    // Bottom-half: Running Stick Figure + IMU Status
+    img_runner = lv_img_create(screen_active);
+    lv_img_set_src(img_runner, &img_runner_f1);
+    lv_obj_set_style_img_recolor(img_runner, lv_color_hex(0x58A6FF), 0);
+    lv_obj_set_style_img_recolor_opa(img_runner, LV_OPA_COVER, 0);
+    lv_obj_align(img_runner, LV_ALIGN_CENTER, -55, 40);
 
+    label_status = lv_label_create(screen_active);
+    lv_label_set_text(label_status, "IDLE");
+    lv_obj_set_style_text_font(label_status, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_color(label_status, lv_color_hex(0x8B949E), 0);
+    lv_obj_align(label_status, LV_ALIGN_CENTER, 25, 40);
+
+    // Start internal LVGL animation timers
+    lv_timer_create(heart_timer_cb, 500, NULL);
+    lv_timer_create(runner_timer_cb, 200, NULL);
 
     // Data Transmission Screen
     screen_transmission = lv_obj_create(NULL);
@@ -185,18 +466,29 @@ void updateHomeScreen(const struct tm *timeinfo, uint8_t battery_pct) {
 
 
 
-void updateActiveScreen(int16_t ax, int16_t ay, int16_t az, int16_t gx, int16_t gy, int16_t gz) {
+void updateActiveScreen(uint16_t bpm, bool is_moving) {
+    current_bpm    = bpm;
+    user_is_moving = is_moving;
+
     if (lv_scr_act() != screen_active) {
         return;
     }
 
-    char buf[128];
+   char bpm_buf[16];
+    if (bpm > 0) {
+        snprintf(bpm_buf, sizeof(bpm_buf), "%u BPM", bpm);
+    } else {
+        snprintf(bpm_buf, sizeof(bpm_buf), "-- BPM");
+    }
+    lv_label_set_text(label_bpm, bpm_buf);
 
-    snprintf(buf, sizeof(buf), "Accel (g):\nX: %d Y: %d Z: %d", ax, ay, az);
-    lv_label_set_text(label_accel, buf);
-
-    snprintf(buf, sizeof(buf), "Gyro (dps):\nX: %d  Y: %d  Z: %d", gx, gy, gz);
-    lv_label_set_text(label_gyro, buf);
+    if (is_moving) {
+        lv_label_set_text(label_status, "ACTIVE");
+        lv_obj_set_style_text_color(label_status, lv_color_hex(0x3FB950), 0);
+    } else {
+        lv_label_set_text(label_status, "IDLE");
+        lv_obj_set_style_text_color(label_status, lv_color_hex(0x8B949E), 0);
+    }
 }
 
 

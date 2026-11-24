@@ -1,6 +1,7 @@
 // Include libraries here
 #include <stdio.h>
 #include <time.h>
+#include <math.h>
 #include <sys/time.h>
 #include <stdlib.h>
 #include "driver/gpio.h"
@@ -247,6 +248,7 @@ static void IRAM_ATTR button2_isr_handler(void *arg) {
     }
 }
 
+// Initialize Buttons
 void init_buttons(void) {
     gpio_config_t io_conf = {
         .pin_bit_mask = (1ULL << BUTTON_1_PIN) | (1ULL << BUTTON_2_PIN),
@@ -267,7 +269,7 @@ void init_buttons(void) {
     gpio_isr_handler_add(BUTTON_2_PIN, button2_isr_handler, NULL);
 }
 
-
+// Loads the screen based on the desired option
 void load_screen(watch_screen_t target) {
     currentDisplay = (watch_screen_t)(target % SCREEN_COUNT);
 
@@ -291,6 +293,7 @@ void load_screen(watch_screen_t target) {
     }
 }
 
+// Switches the screen to the next screen, looping around when necessary
 static watch_screen_t next_runtime_screen(watch_screen_t current) {
     watch_screen_t next = (watch_screen_t)((current + 1) % SCREEN_COUNT);
     if (next == SCREEN_BOOTUP) {
@@ -299,6 +302,7 @@ static watch_screen_t next_runtime_screen(watch_screen_t current) {
     return next;
 }
 
+// Gets the time of day
 void set_rtc_epoch(time_t epoch_sec) {
     struct timeval tv = {
         .tv_sec = epoch_sec,
@@ -313,6 +317,7 @@ void init_rtc_default(void) {
     set_rtc_epoch(1795460400);
 }
 
+// Estimates battery percent in a dead-reckoning style
 static uint8_t get_estimated_battery_pct(void) {
     const int64_t full_runtime_sec = 14400; // 4 hours, 1% drop every 2.4 minutes
     int64_t elapsed_sec = esp_timer_get_time() / 1000000;
@@ -323,6 +328,52 @@ static uint8_t get_estimated_battery_pct(void) {
     }
     return (uint8_t)percent;
 }
+
+
+static bool detect_imu_movement(float ax_g, float ay_g, float az_g) {
+    static int64_t last_motion_us = 0;
+    float mag = sqrtf(ax_g * ax_g + ay_g * ay_g + az_g * az_g);
+
+    if (fabsf(mag - 1.0f) > 0.18f) {
+        last_motion_us = esp_timer_get_time();
+    }
+    return (esp_timer_get_time() - last_motion_us) < 1200000;
+}
+
+// Detects movement when accelerometer deviates from 1.0g
+// static bool detect_imu_movement(float ax_g, float ay_g, float az_g) {
+//    static float baseline_mag = 0.0f;
+//     static uint8_t motion_hits = 0;
+//     static int64_t last_motion_us = 0;
+
+//     float mag = sqrtf(ax_g * ax_g + ay_g * ay_g + az_g * az_g);
+
+//     // Initialize baseline to the sensor's actual resting magnitude on the first read
+//     if (baseline_mag == 0.0f) {
+//         baseline_mag = mag;
+//     }
+
+//     // Slowly track resting gravity (filters out static DC offset)
+//     baseline_mag = 0.85f * baseline_mag + 0.15f * mag;
+
+//     // Isolate dynamic acceleration from gravity + bias
+//     float dynamic_g = fabsf(mag - baseline_mag);
+
+//     // Require 3 consecutive samples (~30ms at 100Hz) above threshold to ignore single spikes
+//     if (dynamic_g > 0.08f) {
+//         if (motion_hits < 3) {
+//             motion_hits++;
+//         }
+//         if (motion_hits >= 3) {
+//             last_motion_us = esp_timer_get_time();
+//         }
+//     } else {
+//         motion_hits = 0;
+//     }
+
+//     // Hold ACTIVE state for 800ms after real movement stops so the runner doesn't stutter
+//     return (last_motion_us > 0) && ((esp_timer_get_time() - last_motion_us) < 800000);
+// }
 
 
 
@@ -446,10 +497,19 @@ void app_main(void) {
                 gy = (int16_t)(((uint16_t)mpu_data[10] << 8) | mpu_data[11]);
                 gz = (int16_t)(((uint16_t)mpu_data[12] << 8) | mpu_data[13]);
                 
-                if (++ui_div >= 15) { // 150ms
+                if (ui_div >= 15) { // 150ms
                     ui_div = 0;
-                    updateActiveScreen(ax, ay, az, gx, gy, gz);
+                    float ax_g = ax / 16384.0f;
+                    float ay_g = ay / 16384.0f;
+                    float az_g = az / 16384.0f;
+                    bool moving = detect_imu_movement(ax_g, ay_g, az_g);
+                    uint16_t simulated_bpm = 60;
+                    //moving = false;
+                    //uint16_t simulated_bpm = moving ? 118 : 72; // Replace with MAX30101 BPM  later
+                    updateActiveScreen(simulated_bpm, moving);
+                    //updateActiveScreen(ax, ay, az, gx, gy, gz);
                 }
+                ui_div++;
             } else {
                 ESP_LOGW("IMU", "MPU read failed: %s", esp_err_to_name(result));
             }

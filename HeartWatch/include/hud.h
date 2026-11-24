@@ -1,8 +1,10 @@
 /**
- * Header code for the HUD of the SH1107 Display
+ * Header code for the HUD of the Display
  */
 
 #include <time.h>
+#include <stdbool.h>
+#include <stdint.h>
 
 typedef enum {
     SCREEN_BOOTUP = 0,
@@ -28,9 +30,8 @@ void displayActive();
 void displayTransmission();
 
 void updateHomeScreen(const struct tm *timeinfo, uint8_t battery_pct);
-//void updateHomeScreen(const struct tm *timeinfo);
 
-void updateActiveScreen(int16_t ax, int16_t ay, int16_t az, int16_t gx, int16_t gy, int16_t gz);
+void updateActiveScreen(uint16_t bpm, bool is_moving);
 
 /**
  * Displays the selected screen
