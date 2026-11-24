@@ -607,7 +607,10 @@ class LiteRtParityTest(unittest.TestCase):
         self.assertEqual(probs.shape, fixture["probs"].shape)
         self.assertLessEqual(float(np.abs(probs - fixture["probs"]).max()), 1e-5)
         labels = clf.predict(fixture["X"])
-        self.assertTrue(all(label in inference.CLASSES for label, _ in labels))
+        # The model's own classes (v2: Still/Walking), from its metadata; they
+        # match the fixture training saved.
+        self.assertEqual(list(fixture["classes"]), clf.classes)
+        self.assertTrue(all(label in clf.classes for label, _ in labels))
 
 
 if __name__ == "__main__":

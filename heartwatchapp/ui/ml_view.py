@@ -3,11 +3,14 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QFileDialog, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
 from ..data import db
-from ..ml.inference import INPUT_SHAPE
+from ..ml.inference import CLASSES, INPUT_SHAPE, METADATA_PATH
 from .theme import Theme
 from .widgets import Card, PlaceholderState, heading, muted
 
@@ -23,12 +26,45 @@ def _left(w: QWidget) -> QWidget:
 PIPELINE_SUMMARY = (
     "windowed [ax, ay, az, gx, gy, gz]  →  1D CNN  →  TFLite inference"
 )
-# Derived from ml.inference.INPUT_SHAPE, so the label can't go stale.
+# Derived from ml.inference.INPUT_SHAPE, so the label can't go stale. Shown
+# when there is no exported model (or its metadata can't be read).
 INPUT_SHAPE_TEXT = f"[{', '.join(str(d) for d in INPUT_SHAPE)}]  (window, channels)"
 
 
+def _shape_text(shape) -> str:
+    return f"[{', '.join(str(d) for d in shape)}]  (window, channels)"
+
+
+def model_status(meta_path: str | Path = METADATA_PATH) -> list[tuple[str, str]]:
+    """The "Model status" lines, from the exported model's model_meta.json.
+    Only reads the JSON (the model itself isn't loaded, nothing is
+    checked); a missing or unreadable file shows the app's defaults."""
+    try:
+        meta = json.loads(Path(meta_path).read_text())
+    except (OSError, ValueError):
+        meta = None
+    if not isinstance(meta, dict):
+        return [("Model file", "ml/models/har_cnn.tflite (no model exported)"),
+                ("Input shape", INPUT_SHAPE_TEXT),
+                ("Output classes", " · ".join(CLASSES)),
+                ("Last updated", "—")]
+    shape = meta.get("input_shape")
+    if not (isinstance(shape, list) and shape and all(isinstance(d, int) for d in shape)):
+        shape = list(INPUT_SHAPE)
+    classes = meta.get("classes")
+    if not (isinstance(classes, list) and classes):
+        classes = CLASSES
+    version = meta.get("model_version") or "unnamed"
+    transform = meta.get("input_transform") or "raw"
+    return [("Model file", f"ml/models/har_cnn.tflite — {version}, input transform {transform} (not loaded)"),
+            ("Input shape", _shape_text(shape)),
+            ("Output classes", " · ".join(str(c) for c in classes)),
+            ("Last updated", str(meta.get("created_at") or "—"))]
+
+
 class MlView(QWidget):
-    def __init__(self, theme: Theme, parent: QWidget | None = None):
+    def __init__(self, theme: Theme, parent: QWidget | None = None,
+                 meta_path: str | Path = METADATA_PATH):
         super().__init__(parent)
         self.theme = theme
 
@@ -38,12 +74,7 @@ class MlView(QWidget):
 
         status = Card()
         status.body().addWidget(heading("Model status"))
-        for k, v in [
-            ("Model file", "ml/models/har_cnn.tflite (not loaded)"),
-            ("Input shape", INPUT_SHAPE_TEXT),
-            ("Output classes", "Sitting · Walking · Standing · Running"),
-            ("Last updated", "—"),
-        ]:
+        for k, v in model_status(meta_path):
             line = QLabel(f"{k}:  {v}")
             line.setObjectName("Mono")
             status.body().addWidget(line)

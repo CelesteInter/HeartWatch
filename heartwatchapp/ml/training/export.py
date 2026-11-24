@@ -91,9 +91,11 @@ def build_metadata(ds, converter: dict, extra: dict) -> dict:
 
 def write_artifacts(tflite: bytes, meta: dict, parity_X: np.ndarray, parity_probs: np.ndarray,
                     model_path: Path = MODEL_PATH, metadata_path: Path = METADATA_PATH,
-                    parity_path: Path = PARITY_PATH) -> None:
+                    parity_path: Path = PARITY_PATH, classes=None) -> None:
+    """classes: the model's own classes for the parity fixture (v2's
+    Still/Walking); None means the global CLASSES (v0, v1)."""
     model_path.parent.mkdir(parents=True, exist_ok=True)
     model_path.write_bytes(tflite)
     metadata_path.write_text(json.dumps(meta, indent=2) + "\n")
     np.savez(parity_path, X=parity_X.astype(np.float32), probs=parity_probs.astype(np.float32),
-             classes=np.array(CLASSES))
+             classes=np.array(CLASSES if classes is None else list(classes)))

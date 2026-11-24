@@ -27,7 +27,7 @@ from typing import NamedTuple
 
 import numpy as np
 
-from . import spec
+from . import spec, transforms
 from .recording import Recording
 
 
@@ -147,3 +147,10 @@ def prepare(rec: Recording, hop_samples: int) -> Windows:
             int(sum(p.n_samples for p in parts)),
         )
     return w._replace(X=normalize(w.X))
+
+
+def model_input(X: np.ndarray, transform: str) -> np.ndarray:
+    """prepare()'s windows -> what a model with this input_transform sees
+    (ml/transforms.py). The export script (training) and
+    ActivityClassifier (prediction) both call this, never their own copy."""
+    return transforms.apply(transform, X)

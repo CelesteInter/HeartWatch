@@ -31,6 +31,7 @@ from typing import Callable
 
 import numpy as np
 
+from ..transforms import magnitude, raw  # noqa: F401  (re-exported: iv.magnitude, iv.raw)
 from .dataset import Split
 from .folds import FileWindows
 
@@ -68,23 +69,14 @@ def relabel(files: list[FileWindows]) -> list[FileWindows]:
 
 
 # ------------------------------------------------------------- transforms
-
-def raw(X: np.ndarray) -> np.ndarray:
-    return X
-
+# raw and magnitude live in ml/transforms.py (the one copy the app's
+# classifier also uses, handoff 13); they are imported above, unchanged.
 
 def centered(X: np.ndarray) -> np.ndarray:
     """Each accel axis minus its own window mean; gyro unchanged."""
     out = np.array(X, copy=True)
     out[:, :, :3] = X[:, :, :3] - X[:, :, :3].mean(axis=1, keepdims=True)
     return out
-
-
-def magnitude(X: np.ndarray) -> np.ndarray:
-    """[n, 50, 2]: |a| - mean(|a|) over the window, and |g|."""
-    a = np.linalg.norm(X[:, :, :3], axis=2)
-    g = np.linalg.norm(X[:, :, 3:6], axis=2)
-    return np.stack([a - a.mean(axis=1, keepdims=True), g], axis=2).astype(X.dtype)
 
 
 def random_rotations(n: int, rng: np.random.Generator) -> np.ndarray:
