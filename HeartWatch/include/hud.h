@@ -1,6 +1,41 @@
 /**
- * Header code for the HUD of the SH1107 Display
+ * Header code for the HUD of the Display
  */
+
+#include <time.h>
+#include <stdbool.h>
+#include <stdint.h>
+
+typedef enum {
+    SCREEN_BOOTUP = 0,
+    SCREEN_SELECTION = 1,
+    SCREEN_HOME = 2,
+    SCREEN_STOPWATCH = 3,
+    SCREEN_ACTIVE = 4,
+    SCREEN_TRANSMISSION = 5,
+    SCREEN_COUNT = 6
+} watch_screen_t;
+
+/**
+ * Initializes LVGL Screens
+ */
+void setupScreens();
+
+void displayBootup();
+
+void displaySelection();
+
+void displayHome();
+
+void displayStopwatch();
+
+void displayActive();
+
+void displayTransmission();
+
+void updateHomeScreen(const struct tm *timeinfo, uint8_t battery_pct);
+
+void updateActiveScreen(uint16_t bpm, bool is_moving);
 
 /**
  * Displays the selected screen
@@ -9,4 +44,6 @@
  * 2 = Heartrate Sensing Display
  * 3 = Motion Sensing Screen (IMU)
  */
- void displayHUD(int selection);
+ //void displayHUD(int selection);
+
+

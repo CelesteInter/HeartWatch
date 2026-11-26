@@ -1,5 +1,5 @@
 idf_component_register(
-	SRCS "main.c" "mpu.c" "max30101.c" "sh1107.c" "hud.c"
+	SRCS "main.c" "max30101.c" "hud.c" "mpu.c"
 	INCLUDE_DIRS "../include"
-	REQUIRES esp_driver_i2c esp_driver_spi log esp_timer
+	REQUIRES esp_driver_i2c esp_driver_spi esp_lcd log esp_timer
 )
