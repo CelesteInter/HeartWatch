@@ -41,13 +41,15 @@
 
 // Timing Constants
 #define BTN_DEBOUNCE_US      50000    // 50 ms hardware debounce (short enough for triple-clicks)
-#define MULTI_CLICK_GAP_US   100000   // 500 ms window to group single/double/triple presses
-#define WAKE_TIMEOUT_MS      7000     // Keep display awake for 7 seconds after touch wake
+#define MULTI_CLICK_GAP_US   300000   // 300 ms window to group single/double/triple presses
+#define WAKE_TIMEOUT_MS      100000     // Keep display awake for 7 seconds after touch wake
 
 // Log Tags
 static const char *MPU_TAG      = "mpu";
 static const char *MAX30101_TAG = "max30101";
 static const char *MAIN_TAG     = "esp";
+static const char *BTN_TAG = "button";
+static const char *SCRN_TAG = "screen";
 
 // PSRAM Logging Buffer
 typedef struct {
@@ -68,6 +70,7 @@ static bool is_logging        = false;
 static esp_lcd_panel_io_handle_t io_handle    = NULL;
 static esp_lcd_panel_handle_t    panel_handle = NULL;
 static watch_screen_t currentDisplay          = SCREEN_BOOTUP;
+static watch_screen_t toSelect                = SCREEN_HOME;
 static bool display_awake                     = true;
 static uint32_t last_wake_ms                  = 0;
 static uint8_t ui_div                         = 0;
@@ -367,13 +370,13 @@ void load_screen(watch_screen_t target) {
     }
 }
 
-static watch_screen_t next_runtime_screen(watch_screen_t current) {
-    watch_screen_t next = (watch_screen_t)((current + 1) % SCREEN_COUNT);
-    if (next == SCREEN_BOOTUP) {
-        next = SCREEN_SELECTION;
-    }
-    return next;
-}
+// static watch_screen_t next_runtime_screen(watch_screen_t current) {
+//     watch_screen_t next = (watch_screen_t)((current + 1) % SCREEN_COUNT);
+//     if (next == SCREEN_BOOTUP) {
+//         next = SCREEN_SELECTION;
+//     }
+//     return next;
+// }
 
 static void transmit_psram_logs(void) {
     ESP_LOGI(MAIN_TAG, "Transmitting %" PRIu32 " logged entries...", log_pointer);
@@ -411,7 +414,23 @@ static void toggle_psram_logging(void) {
 
 // 1x Press: Strictly screen navigation
 static void handle_button1_single_press(void) {
-    load_screen(next_runtime_screen(currentDisplay));
+    // Enter the selection screen and highlight the screen we just came from
+    if (currentDisplay != SCREEN_SELECTION) {
+        toSelect = currentDisplay;
+        if (toSelect == SCREEN_BOOTUP || toSelect == SCREEN_SELECTION) {
+            toSelect = SCREEN_HOME;
+        }
+        load_screen(SCREEN_SELECTION); // Sets currentDisplay = SCREEN_SELECTION
+        updateSelectionScreen(toSelect);
+        ESP_LOGI(SCRN_TAG, "Opened Selection Screen, highlighted: %d", toSelect);
+    } else {  // Stay on SCREEN_SELECTION and advance the highlighted target
+        toSelect = (watch_screen_t)((toSelect + 1) % SCREEN_COUNT);
+        if (toSelect == SCREEN_BOOTUP || toSelect == SCREEN_SELECTION) {
+            toSelect = SCREEN_HOME;
+        }
+        updateSelectionScreen(toSelect);
+        ESP_LOGI(SCRN_TAG, "Selection highlighted: %d", toSelect);
+    }
 }
 
 // 2x Press: Contextual "Select" action
@@ -426,8 +445,9 @@ static void handle_button1_double_press(void) {
             break;
 
         case SCREEN_SELECTION:
-            // Screen selection logic will be wired here once selection UI is ready
-            ESP_LOGI(MAIN_TAG, "Selection screen select triggered");
+            ESP_LOGI(SCRN_TAG, "Selected screen: %d", toSelect);
+            load_screen(toSelect);
+            
             break;
 
         case SCREEN_ACTIVE:
@@ -442,16 +462,19 @@ static void handle_button1_double_press(void) {
             break;
 
         default:
+            ESP_LOGI(BTN_TAG, "2x Press -> No select action bound on screen %d", currentDisplay);
             break;
     }
 }
 
 // 3x Press: Stopwatch restart (and optional logging reset)
 static void handle_button1_triple_press(void) {
-    stopwatch_running    = false;
-    stopwatch_elapsed_ms = 0;
-    ESP_LOGI(MAIN_TAG, "Stopwatch RESET");
-
+    if (currentDisplay == SCREEN_STOPWATCH) {
+        stopwatch_running    = false;
+        stopwatch_elapsed_ms = 0;
+        updateStopwatchScreen(0, stopwatch_running);
+        ESP_LOGI(BTN_TAG, "3x Press -> Stopwatch RESET");
+    }
     // Optional: If triple-press should also clear logged data
     // is_logging = false;
     // log_pointer = 0;
@@ -665,6 +688,11 @@ void app_main(void) {
 
             // Update active LVGL screen widgets only while display is awake
             if (display_awake) {
+                static uint8_t sw_div = 0;
+                if (currentDisplay == SCREEN_STOPWATCH && ++sw_div >= 5) { // ~50 ms
+                    sw_div = 0;
+                    updateStopwatchScreen(stopwatch_elapsed_ms, stopwatch_running);
+                }
                 if (++clock_div >= 50) { // ~500 ms
                     clock_div = 0;
                     time_t now;

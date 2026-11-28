@@ -35,6 +35,10 @@ void displayTransmission();
 
 void updateHomeScreen(const struct tm *timeinfo, uint8_t battery_pct);
 
+void updateSelectionScreen(watch_screen_t current_screen);
+
+void updateStopwatchScreen(uint32_t elapsed_ms, bool is_running);
+
 void updateActiveScreen(uint16_t bpm, bool is_moving);
 
 /**
