@@ -41,8 +41,8 @@
 
 // Timing Constants
 #define BTN_DEBOUNCE_US      50000    // 50 ms hardware debounce (short enough for triple-clicks)
-#define MULTI_CLICK_GAP_US   300000   // 300 ms window to group single/double/triple presses
-#define WAKE_TIMEOUT_MS      100000     // Keep display awake for 7 seconds after touch wake
+#define MULTI_CLICK_GAP_US   200000   // 300 ms window to group single/double/triple presses
+#define WAKE_TIMEOUT_MS      10000     // Keep display awake for 10 seconds after touch wake
 
 // Log Tags
 static const char *MPU_TAG      = "mpu";
@@ -50,6 +50,11 @@ static const char *MAX30101_TAG = "max30101";
 static const char *MAIN_TAG     = "esp";
 static const char *BTN_TAG = "button";
 static const char *SCRN_TAG = "screen";
+
+
+
+
+
 
 // PSRAM Logging Buffer
 typedef struct {
@@ -65,6 +70,12 @@ typedef struct {
 static sensor_log_t *log_buffer = NULL;
 static uint32_t log_pointer   = 0;
 static bool is_logging        = false;
+static bool is_transmitting       = false;
+static uint32_t transmit_index    = 0;
+static uint32_t transmit_start_ms = 0;
+
+#define TRANSMIT_CHUNK_SIZE       25    // Entries printed per 10 ms loop tick
+#define TRANSMIT_MIN_DISPLAY_MS   600   // Minimum time "--Syncing--" stays visible
 
 // Display, Sleep & LVGL State
 static esp_lcd_panel_io_handle_t io_handle    = NULL;
@@ -157,32 +168,32 @@ static uint8_t get_estimated_battery_pct(void) {
     return (uint8_t)(percent < 5 ? 5 : percent);
 }
 
-static bool detect_imu_movement(float ax_g, float ay_g, float az_g) {
-    static float baseline_mag     = 0.0f;
-    static uint8_t motion_hits    = 0;
-    static int64_t last_motion_us = 0;
+// static bool detect_imu_movement(float ax_g, float ay_g, float az_g) {
+//     static float baseline_mag     = 0.0f;
+//     static uint8_t motion_hits    = 0;
+//     static int64_t last_motion_us = 0;
 
-    float mag = sqrtf(ax_g * ax_g + ay_g * ay_g + az_g * az_g);
-    if (baseline_mag == 0.0f) {
-        baseline_mag = mag;
-    }
+//     float mag = sqrtf(ax_g * ax_g + ay_g * ay_g + az_g * az_g);
+//     if (baseline_mag == 0.0f) {
+//         baseline_mag = mag;
+//     }
 
-    baseline_mag = 0.85f * baseline_mag + 0.15f * mag;
-    float dynamic_g = fabsf(mag - baseline_mag);
+//     baseline_mag = 0.85f * baseline_mag + 0.15f * mag;
+//     float dynamic_g = fabsf(mag - baseline_mag);
 
-    if (dynamic_g > 0.08f) {
-        if (motion_hits < 3) {
-            motion_hits++;
-        }
-        if (motion_hits >= 3) {
-            last_motion_us = esp_timer_get_time();
-        }
-    } else {
-        motion_hits = 0;
-    }
+//     if (dynamic_g > 0.08f) {
+//         if (motion_hits < 3) {
+//             motion_hits++;
+//         }
+//         if (motion_hits >= 3) {
+//             last_motion_us = esp_timer_get_time();
+//         }
+//     } else {
+//         motion_hits = 0;
+//     }
 
-    return (last_motion_us > 0) && ((esp_timer_get_time() - last_motion_us) < 800000);
-}
+//     return (last_motion_us > 0) && ((esp_timer_get_time() - last_motion_us) < 800000);
+// }
 
 // ============================================================================
 // Hardware Initialization (I2C Sensors, ST7789 SPI, LVGL, Button ISRs)
@@ -370,30 +381,6 @@ void load_screen(watch_screen_t target) {
     }
 }
 
-// static watch_screen_t next_runtime_screen(watch_screen_t current) {
-//     watch_screen_t next = (watch_screen_t)((current + 1) % SCREEN_COUNT);
-//     if (next == SCREEN_BOOTUP) {
-//         next = SCREEN_SELECTION;
-//     }
-//     return next;
-// }
-
-static void transmit_psram_logs(void) {
-    ESP_LOGI(MAIN_TAG, "Transmitting %" PRIu32 " logged entries...", log_pointer);
-    for (uint32_t i = 0; i < log_pointer; i++) {
-        sensor_log_t *entry = &log_buffer[i];
-        ESP_LOGI(MAIN_TAG,
-                 "log%" PRIu32 ": ax: %d, ay: %d, az: %d, "
-                 "gx: %d, gy: %d, gz: %d, heartrate: %u",
-                 i, entry->ax, entry->ay, entry->az,
-                 entry->gx, entry->gy, entry->gz,
-                 (unsigned int)(entry->heartrate / 2));
-    }
-    reset_heart_rate_state();
-    log_pointer = 0;
-    ESP_LOGI(MAIN_TAG, "Transmission complete");
-}
-
 static void toggle_psram_logging(void) {
     if (!is_logging) {
         log_pointer = 0;
@@ -410,6 +397,20 @@ static void toggle_psram_logging(void) {
         is_logging = false;
         ESP_LOGI(MAIN_TAG, "PSRAM logging stopped (%" PRIu32 " entries)", log_pointer);
     }
+}
+
+static void start_psram_transmission(void) {
+    if (is_transmitting) {
+        return;
+    }
+    if (is_logging) {
+        toggle_psram_logging(); // Close active log cleanly before transmitting
+    }
+    ESP_LOGI(MAIN_TAG, "Transmitting %" PRIu32 " logged entries...", log_pointer);
+    transmit_index    = 0;
+    transmit_start_ms = millis();
+    is_transmitting   = true;
+    updateTransmissionScreen(true);
 }
 
 // 1x Press: Strictly screen navigation
@@ -455,12 +456,8 @@ static void handle_button1_double_press(void) {
             break;
 
         case SCREEN_TRANSMISSION:
-            if (is_logging) {
-                toggle_psram_logging(); // Close active log cleanly before transmitting
-            }
-            transmit_psram_logs();
+            start_psram_transmission();
             break;
-
         default:
             ESP_LOGI(BTN_TAG, "2x Press -> No select action bound on screen %d", currentDisplay);
             break;
@@ -641,7 +638,7 @@ void app_main(void) {
                 handle_button1_triple_press();
             }
         } else {
-            // Auto-sleep display after 7 seconds of inactivity
+            // Auto-sleep display after some seconds of inactivity
             if (display_awake && (now_ms - last_wake_ms >= WAKE_TIMEOUT_MS)) {
                 sleep_display();
             }
@@ -650,7 +647,6 @@ void app_main(void) {
             if (stopwatch_running) {
                 stopwatch_elapsed_ms += (now_ms - stopwatch_last_tick_ms);
                 stopwatch_last_tick_ms = now_ms;
-                // TODO: Call updateStopwatchScreen(stopwatch_elapsed_ms) once implemented in hud.c
             }
 
             // Manage MAX30101 power (active when viewing Active screen awake, or when logging)
@@ -686,6 +682,35 @@ void app_main(void) {
                 };
             }
 
+            // Process Transmission 
+            if (is_transmitting) {
+                last_wake_ms = now_ms; // Keep display awake while syncing
+
+                uint32_t end_idx = transmit_index + TRANSMIT_CHUNK_SIZE;
+                if (end_idx > log_pointer) {
+                    end_idx = log_pointer;
+                }
+
+                for (; transmit_index < end_idx; transmit_index++) {
+                    sensor_log_t *entry = &log_buffer[transmit_index];
+                    ESP_LOGI(MAIN_TAG,
+                            "log%" PRIu32 ": ax: %d, ay: %d, az: %d, "
+                            "gx: %d, gy: %d, gz: %d, heartrate: %u",
+                            transmit_index, entry->ax, entry->ay, entry->az,
+                            entry->gx, entry->gy, entry->gz,
+                            (unsigned int)(entry->heartrate / 2));
+                }
+
+                if (transmit_index >= log_pointer &&
+                    (now_ms - transmit_start_ms) >= TRANSMIT_MIN_DISPLAY_MS) {
+                    reset_heart_rate_state();
+                    log_pointer     = 0;
+                    is_transmitting = false;
+                    updateTransmissionScreen(false);
+                    ESP_LOGI(MAIN_TAG, "Transmission complete");
+                }
+            }
+
             // Update active LVGL screen widgets only while display is awake
             if (display_awake) {
                 static uint8_t sw_div = 0;
@@ -704,11 +729,11 @@ void app_main(void) {
 
                 if (++ui_div >= 15) { // ~150 ms
                     ui_div = 0;
-                    float ax_g = accel_x / 16384.0f;
-                    float ay_g = accel_y / 16384.0f;
-                    float az_g = accel_z / 16384.0f;
-                    bool moving = mpu_ok ? detect_imu_movement(ax_g, ay_g, az_g) : false;
-                    updateActiveScreen(stable_bpm / 2, moving);
+                    // float ax_g = accel_x / 16384.0f;
+                    // float ay_g = accel_y / 16384.0f;
+                    // float az_g = accel_z / 16384.0f;
+                    //bool moving = mpu_ok ? detect_imu_movement(ax_g, ay_g, az_g) : false;
+                    updateActiveScreen(stable_bpm / 2, is_logging);
                 }
             }
         }

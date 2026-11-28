@@ -219,7 +219,7 @@ static const lv_img_dsc_t *runner_frames[4] = {
 };
 
 static uint16_t current_bpm       = 0;
-static bool     user_is_moving    = false;
+static bool     user_is_logging    = false;
 static bool     heart_expanded    = false;
 static uint8_t  runner_step       = 0;
 
@@ -291,7 +291,7 @@ static void runner_timer_cb(lv_timer_t *timer) {
         return;
     }
 
-    if (!user_is_moving) {
+    if (!user_is_logging) {
         runner_step = 1;
         lv_img_set_src(img_runner, &img_runner_f1);
         return;
@@ -408,26 +408,26 @@ void setupScreens() {
     lv_img_set_src(img_heart, &img_heart_small);
     lv_obj_set_style_img_recolor(img_heart, lv_color_hex(0xFF2E4C), 0);
     lv_obj_set_style_img_recolor_opa(img_heart, LV_OPA_COVER, 0);
-    lv_obj_align(img_heart, LV_ALIGN_CENTER, -70, -30);
+    lv_obj_align(img_heart, LV_ALIGN_CENTER, -70, -40);
 
     label_bpm = lv_label_create(screen_active);
     lv_label_set_text(label_bpm, "-- BPM");
     lv_obj_set_style_text_font(label_bpm, &lv_font_montserrat_36, 0);
     lv_obj_set_style_text_color(label_bpm, lv_color_hex(0xFFFFFF), 0);
-    lv_obj_align(label_bpm, LV_ALIGN_CENTER, 28, -30);
+    lv_obj_align(label_bpm, LV_ALIGN_CENTER, 30, -40);
 
     // Bottom-half: Running Stick Figure + IMU Status
     img_runner = lv_img_create(screen_active);
     lv_img_set_src(img_runner, &img_runner_f1);
     lv_obj_set_style_img_recolor(img_runner, lv_color_hex(0x58A6FF), 0);
     lv_obj_set_style_img_recolor_opa(img_runner, LV_OPA_COVER, 0);
-    lv_obj_align(img_runner, LV_ALIGN_CENTER, -55, 40);
+    lv_obj_align(img_runner, LV_ALIGN_CENTER, -70, 40);
 
     label_status = lv_label_create(screen_active);
-    lv_label_set_text(label_status, "IDLE");
-    lv_obj_set_style_text_font(label_status, &lv_font_montserrat_20, 0);
+    lv_label_set_text(label_status, " Activity\n  Ready");
+    lv_obj_set_style_text_font(label_status, &lv_font_montserrat_30, 0);
     lv_obj_set_style_text_color(label_status, lv_color_hex(0x8B949E), 0);
-    lv_obj_align(label_status, LV_ALIGN_CENTER, 25, 40);
+    lv_obj_align(label_status, LV_ALIGN_CENTER, 30, 40);
 
     // Start internal LVGL animation timers
     lv_timer_create(heart_timer_cb, 500, NULL);
@@ -439,7 +439,7 @@ void setupScreens() {
     lv_obj_set_style_bg_color(screen_transmission, lv_color_hex(0x0D1117), 0);
 
     label_transmission = lv_label_create(screen_transmission);
-    lv_label_set_text(label_transmission, "Heartwatch\nTransmitting Data...");
+    lv_label_set_text(label_transmission, "  Heartwatch\nReady To Sync");
     lv_obj_set_style_text_font(label_transmission, &lv_font_montserrat_20, 0);
     lv_obj_set_style_text_color(label_transmission, lv_color_hex(0xFFFFFF), 0);
     lv_obj_align(label_transmission, LV_ALIGN_CENTER, 0, -60);
@@ -447,13 +447,9 @@ void setupScreens() {
     label_download = lv_label_create(screen_transmission);
     lv_obj_set_style_text_font(label_download, &lv_font_montserrat_48, 0);
     lv_label_set_text(label_download, LV_SYMBOL_DOWNLOAD);
-    lv_obj_set_style_text_color(label_download, lv_color_hex(0x3FB950), 0);
+    lv_obj_set_style_text_color(label_download, lv_color_hex(0xa89d9a), 0);
     lv_obj_align(label_download, LV_ALIGN_CENTER, 0, 60);
 
-
-    //lv_obj_t *intro_label = lv_label_create(screen_bootup);
-
-    //lv_scr_load(screen_bootup); // to swap screens, load 
 }
 
 void displayBootup() {
@@ -478,6 +474,7 @@ void displayActive() {
 
 void displayTransmission() {
     lv_scr_load(screen_transmission);
+    updateTransmissionScreen(false);
 }
 
 void updateHomeScreen(const struct tm *timeinfo, uint8_t battery_pct) {
@@ -661,9 +658,9 @@ void updateStopwatchScreen(uint32_t elapsed_ms, bool is_running) {
     lv_label_set_text(label_stopwatch, time_buf);
 }
 
-void updateActiveScreen(uint16_t bpm, bool is_moving) {
+void updateActiveScreen(uint16_t bpm, bool is_logging) {
     current_bpm    = bpm;
-    user_is_moving = is_moving;
+    user_is_logging = is_logging;
 
     if (lv_scr_act() != screen_active) {
         return;
@@ -677,11 +674,22 @@ void updateActiveScreen(uint16_t bpm, bool is_moving) {
     }
     lv_label_set_text(label_bpm, bpm_buf);
 
-    if (is_moving) {
-        lv_label_set_text(label_status, "ACTIVE");
+    if (is_logging) {
+        lv_label_set_text(label_status, "   Activity\n Tracking!");
         lv_obj_set_style_text_color(label_status, lv_color_hex(0x3FB950), 0);
     } else {
-        lv_label_set_text(label_status, "IDLE");
+        lv_label_set_text(label_status, " Activity\n  Ready");
         lv_obj_set_style_text_color(label_status, lv_color_hex(0x8B949E), 0);
+    }
+}
+
+
+void updateTransmissionScreen(bool is_transmitting) {
+    if (is_transmitting) {
+        lv_label_set_text(label_transmission, " Heartwatch\n--Syncing--");
+        lv_obj_set_style_text_color(label_download, lv_color_hex(0x3FB950), 0); 
+    } else {
+        lv_label_set_text(label_transmission, " Heartwatch\nReady To Sync");
+        lv_obj_set_style_text_color(label_download, lv_color_hex(0xa89d9a), 0); 
     }
 }
